@@ -1,0 +1,149 @@
+import express, { type Request, type Response } from "express";
+import { config, publicConfig } from "./config.js";
+import { completeOAuthInstall, consumeOAuthState, createInstallUrl } from "./oauth.js";
+import { handleAgentSessionWebhook } from "./session-runner.js";
+import { isFreshWebhookTimestamp, verifyLinearSignature } from "./signature.js";
+
+type LinearWebhookPayload = {
+  type?: string;
+  action?: string;
+  webhookTimestamp?: number;
+  agentSession?: {
+    id?: string;
+    issue?: {
+      identifier?: string;
+      title?: string;
+      url?: string;
+    };
+  };
+};
+
+function rawBody(req: Request): Buffer {
+  return Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+}
+
+function parseJsonBody(body: Buffer): unknown {
+  if (body.length === 0) return {};
+  return JSON.parse(body.toString("utf8"));
+}
+
+function logWebhook(payload: LinearWebhookPayload) {
+  const agentActivity = (payload as { agentActivity?: { content?: { type?: string; body?: string } } }).agentActivity;
+  console.log("linear webhook received", {
+    type: payload.type,
+    action: payload.action,
+    agentSessionId: payload.agentSession?.id,
+    issue: payload.agentSession?.issue?.identifier,
+    activityType: agentActivity?.content?.type,
+    activityBody: agentActivity?.content?.body?.slice(0, 120),
+  });
+}
+
+function handleAgentSessionEvent(payload: LinearWebhookPayload) {
+  void handleAgentSessionWebhook(payload).catch((error: Error) => {
+    console.error("failed to handle agent session webhook", { message: error.message });
+  });
+}
+
+export function createApp() {
+  const app = express();
+
+  app.disable("x-powered-by");
+
+  app.get("/healthz", (_req: Request, res: Response) => {
+    res.json({ ok: true, service: "clanker-linear-agent" });
+  });
+
+  app.get("/linear/install", async (_req: Request, res: Response, next: express.NextFunction) => {
+    try {
+      const installUrl = await createInstallUrl();
+      res.redirect(302, installUrl);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/linear/oauth/callback", async (req: Request, res: Response, next: express.NextFunction) => {
+    try {
+      if (typeof req.query.error === "string") {
+        return res.status(400).send(`Linear OAuth error: ${req.query.error}\n`);
+      }
+
+      const code = typeof req.query.code === "string" ? req.query.code : undefined;
+      const state = typeof req.query.state === "string" ? req.query.state : undefined;
+
+      if (!code || !state) {
+        return res.status(400).send("Missing OAuth code or state.\n");
+      }
+
+      if (!(await consumeOAuthState(state))) {
+        return res.status(401).send("Invalid or expired OAuth state.\n");
+      }
+
+      const install = await completeOAuthInstall(code);
+      console.log("linear app installed", {
+        viewerAppUserId: install.viewerAppUserId,
+        scope: install.scope,
+      });
+
+      return res.type("text/plain").send(
+        [
+          "Clanker is installed in Linear.",
+          `App user ID: ${install.viewerAppUserId}`,
+          "You can close this tab.",
+          "",
+        ].join("\n"),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post(
+    "/linear/webhook",
+    express.raw({ type: "application/json", limit: "1mb" }),
+    (req: Request, res: Response) => {
+      const body = rawBody(req);
+
+      if (!verifyLinearSignature(req.get("linear-signature"), body)) {
+        return res.status(401).json({ ok: false, error: "invalid_signature" });
+      }
+
+      let payload: LinearWebhookPayload;
+      try {
+        payload = parseJsonBody(body) as LinearWebhookPayload;
+      } catch {
+        return res.status(400).json({ ok: false, error: "invalid_json" });
+      }
+
+      if (!isFreshWebhookTimestamp(payload.webhookTimestamp)) {
+        return res.status(401).json({ ok: false, error: "stale_webhook" });
+      }
+
+      logWebhook(payload);
+      if (payload.type === "AgentSessionEvent") {
+        handleAgentSessionEvent(payload);
+      }
+
+      return res.status(200).json({ ok: true, accepted: payload.type === "AgentSessionEvent" });
+    },
+  );
+
+  app.use((_req: Request, res: Response) => {
+    res.status(404).json({ ok: false, error: "not_found" });
+  });
+
+  app.use((error: Error, _req: Request, res: Response, _next: express.NextFunction) => {
+    console.error("request failed", { name: error.name, message: error.message });
+    res.status(500).json({ ok: false, error: "internal_error" });
+  });
+
+  return app;
+}
+
+if (process.env.NODE_ENV !== "test") {
+  const app = createApp();
+  app.listen(config.PORT, config.HOST, () => {
+    console.log("clanker linear agent listening", publicConfig());
+  });
+}
