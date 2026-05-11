@@ -4,9 +4,9 @@ Versioned source for the Clanker custom Linear agent used by `your-domain.exampl
 
 ## Repository placement
 
-This agent is intentionally vendored in Your app under `ops/clanker-linear-agent` instead of living only at `/home/exedev/clanker-linear-agent`. That keeps app proxy changes, agent code, package files, and deployment docs reviewable together while keeping production secrets and OAuth token stores outside git.
+This agent intentionally lives in its own repo at `/home/exedev/clanker-linear-agent`, outside the Your app Rails repo. The agent can still operate on Your app through `PI_WORKDIR=/home/exedev/your-app`, while its code, package files, deployment docs, and systemd template stay independently versioned.
 
-The older `/home/exedev/clanker-linear-agent` path may still hold the production `.env` and mutable `data/*.json` token files. Do not commit those files.
+Production secrets and mutable OAuth/pi session state also live under this directory, but are ignored by git.
 
 ## Files tracked here
 
@@ -14,12 +14,13 @@ The older `/home/exedev/clanker-linear-agent` path may still hold the production
 - `package.json` / `package-lock.json` — pinned Node dependencies
 - `.env.example` — non-secret configuration template
 - `systemd/clanker-linear-agent.service.template` — user systemd unit template
+- `README.md` — deploy and operating notes
 
-Ignored locally: `.env`, `data/*.json`, `dist/`, `node_modules/`, and logs.
+Ignored locally: `.env`, `data/*.json`, `data/pi-sessions/`, `dist/`, `node_modules/`, and logs.
 
 ## Required env vars
 
-Create a production `.env` outside git, for example `/home/exedev/clanker-linear-agent/.env`:
+Create a production `.env` outside git at `/home/exedev/clanker-linear-agent/.env`:
 
 ```dotenv
 LINEAR_CLIENT_ID=
@@ -30,6 +31,9 @@ BASE_URL=https://your-domain.example
 PI_WORKDIR=/home/exedev/your-app
 PI_COMMAND=pi
 PI_MODE=json
+PI_RUNNER=sdk
+PI_SESSION_DIR=./data/pi-sessions
+PI_PROGRESS_DEBOUNCE_MS=3000
 PI_TIMEOUT_MS=1800000
 HOST=127.0.0.1
 PORT=8787
@@ -37,7 +41,7 @@ TOKEN_STORE_PATH=/home/exedev/clanker-linear-agent/data/linear-tokens.json
 STATE_STORE_PATH=/home/exedev/clanker-linear-agent/data/oauth-states.json
 ```
 
-Use absolute `TOKEN_STORE_PATH` and `STATE_STORE_PATH` in production so restarts/deploys do not depend on the checkout's current working directory.
+Use absolute `TOKEN_STORE_PATH` and `STATE_STORE_PATH` in production so restarts/deploys do not depend on the current working directory.
 
 ## Linear app settings
 
@@ -51,10 +55,10 @@ Rails serves public `/linear/*` and `/healthz` routes on port 3000 and proxies t
 ## Build and local checks
 
 ```bash
-cd /home/exedev/your-app/ops/clanker-linear-agent
+cd /home/exedev/clanker-linear-agent
 npm install
-npm run build
 npm run typecheck
+npm run build
 ```
 
 Smoke tests that require configured secrets and/or a running service:
@@ -73,12 +77,13 @@ curl http://127.0.0.1:3000/healthz
 
 ## Deploy / restart workflow
 
-1. Update code under `ops/clanker-linear-agent` and commit it through Your app.
-2. On the server:
+1. Update code in `/home/exedev/clanker-linear-agent` and commit it.
+2. Build and install/reload the service:
 
    ```bash
-   cd /home/exedev/your-app/ops/clanker-linear-agent
+   cd /home/exedev/clanker-linear-agent
    npm install
+   npm run typecheck
    npm run build
    install -Dm644 systemd/clanker-linear-agent.service.template \
      /home/exedev/.config/systemd/user/clanker-linear-agent.service
@@ -102,10 +107,12 @@ sudo loginctl enable-linger exedev
 
 ## pi integration
 
-By default the service runs `pi --mode json -p <prompt>` and extracts the final assistant response from pi's JSONL output before posting back to Linear. Set `PI_MODE=text` to fall back to plain `pi -p <prompt>` output.
+The service embeds pi through the `@earendil-works/pi-coding-agent` SDK. It keeps a persistent SDK session per Linear `agentSession.id` in `data/pi-sessions/`, streams debounced safe progress updates to Linear, uses SDK `followUp` for active-session follow-ups, and calls `session.abort()` for stop/cancel requests.
 
-The Entire CLI issue about native pi integration (entireio/cli#221) is directionally useful for future hardening because it confirms pi JSONL sessions and extension hooks can expose richer session metadata. It is not required for this versioning work, but it is relevant to future session-link/plan-update improvements.
+Progress messages are truncated and obvious secret-looking values are redacted before posting to Linear.
 
 ## Recovery behavior and limitations
 
-Current session queue state is in memory. A Node/systemd restart can lose an active run or queued follow-up prompt. OAuth tokens and OAuth state are persisted to the configured JSON files with private `0600` permissions.
+Active run/queue state is still in memory. A Node/systemd restart can lose an active run or queued follow-up prompt, although OAuth tokens and pi session history are persisted on disk. This is the remaining scope of STR-11.
+
+The current deployment targets one Linear workspace/install. Multi-workspace token selection hardening is remaining scope of STR-13.
