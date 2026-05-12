@@ -5,6 +5,7 @@ const ConfigSchema = z.object({
   LINEAR_CLIENT_ID: z.string().min(1),
   LINEAR_CLIENT_SECRET: z.string().min(1),
   LINEAR_WEBHOOK_SECRET: z.string().min(1),
+  INSTALL_SECRET: z.preprocess((value) => value === "" ? undefined : value, z.string().min(16).optional()),
   LINEAR_REDIRECT_URI: z.string().url(),
   BASE_URL: z.string().url(),
   PI_WORKDIR: z.string().min(1),
@@ -26,6 +27,7 @@ export function publicConfig() {
   return {
     baseUrl: config.BASE_URL,
     redirectUri: config.LINEAR_REDIRECT_URI,
+    installSecretConfigured: Boolean(config.INSTALL_SECRET),
     piWorkdir: config.PI_WORKDIR,
     piCommand: config.PI_COMMAND,
     piMode: config.PI_MODE,

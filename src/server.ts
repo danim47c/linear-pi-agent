@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import express, { type Request, type Response } from "express";
 import { config, publicConfig } from "./config.js";
 import { completeOAuthInstall, consumeOAuthState, createInstallUrl } from "./oauth.js";
@@ -45,6 +46,22 @@ function handleAgentSessionEvent(payload: LinearWebhookPayload) {
   });
 }
 
+function installSecretFromRequest(req: Request): string | undefined {
+  const header = req.get("authorization");
+  if (header?.startsWith("Bearer ")) return header.slice("Bearer ".length);
+  return typeof req.query.install_secret === "string" ? req.query.install_secret : undefined;
+}
+
+function isInstallAuthorized(req: Request): boolean {
+  if (!config.INSTALL_SECRET) return true;
+  const provided = installSecretFromRequest(req);
+  if (!provided) return false;
+
+  const expected = Buffer.from(config.INSTALL_SECRET);
+  const actual = Buffer.from(provided);
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
 export function createApp() {
   const app = express();
 
@@ -54,8 +71,12 @@ export function createApp() {
     res.json({ ok: true, service: "linear-pi-agent" });
   });
 
-  app.get("/linear/install", async (_req: Request, res: Response, next: express.NextFunction) => {
+  app.get("/linear/install", async (req: Request, res: Response, next: express.NextFunction) => {
     try {
+      if (!isInstallAuthorized(req)) {
+        return res.status(401).type("text/plain").send("Missing or invalid install secret.\n");
+      }
+
       const installUrl = await createInstallUrl();
       res.redirect(302, installUrl);
     } catch (error) {

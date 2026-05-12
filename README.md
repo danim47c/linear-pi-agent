@@ -59,10 +59,10 @@ Enable Agent Session events for the webhook.
 After the service is running, install the app by visiting:
 
 ```text
-https://your-domain.example/linear/install
+https://your-domain.example/linear/install?install_secret=YOUR_INSTALL_SECRET
 ```
 
-This redirects through Linear OAuth and stores the app token locally.
+This redirects through Linear OAuth and stores the app token locally. `INSTALL_SECRET` protects the install endpoint so random visitors cannot start an install flow against your service.
 
 ## Requirements
 
@@ -91,6 +91,7 @@ Copy `.env.example` to `.env` and fill in your values:
 LINEAR_CLIENT_ID=
 LINEAR_CLIENT_SECRET=
 LINEAR_WEBHOOK_SECRET=
+INSTALL_SECRET=
 LINEAR_REDIRECT_URI=https://your-domain.example/linear/oauth/callback
 BASE_URL=https://your-domain.example
 
@@ -113,6 +114,7 @@ Important values:
 - `BASE_URL` — public URL for this service, without a trailing slash
 - `LINEAR_REDIRECT_URI` — must exactly match the OAuth callback URL configured in Linear
 - `LINEAR_WEBHOOK_SECRET` — Linear webhook signing secret
+- `INSTALL_SECRET` — random secret for `/linear/install`; use at least 16 characters
 - `PI_WORKDIR` — the repository pi should work in
 - `PI_SESSION_DIR` — persisted pi SDK session state
 - `TOKEN_STORE_PATH` / `STATE_STORE_PATH` — persisted Linear OAuth state
@@ -184,8 +186,35 @@ loginctl enable-linger "$USER"
 
 Ignored locally: `.env`, `data/*.json`, `data/pi-sessions/`, `dist/`, `node_modules/`, and logs.
 
+## Security notes
+
+This service gives Linear a path to run `pi` in `PI_WORKDIR`. Judge for yourself whether that is appropriate for your repository, workspace, users, and hosting environment.
+
+Important considerations:
+
+- Keep `INSTALL_SECRET` set. Without it, anyone who knows your service URL can visit `/linear/install` and start an OAuth install flow.
+- The webhook endpoint verifies Linear's signature with `LINEAR_WEBHOOK_SECRET`; knowing the public URL alone should not be enough to fake Linear webhooks.
+- Anyone who can use this Linear agent can ask `pi` to act in `PI_WORKDIR`. Treat Linear agent access like write access to that repository.
+- Run the service as a low-privilege user and avoid keeping unrelated secrets in the target repository.
+- Output redaction is best-effort. The service redacts obvious token-looking strings, but you should still avoid exposing secrets to the agent workspace.
+- Add rate limiting at your reverse proxy or hosting layer if the service is public, especially for `/linear/install` and `/linear/webhook`.
+
+Public endpoint expectations:
+
+| Endpoint | Protection | Notes |
+| --- | --- | --- |
+| `/healthz` | none | Safe to expose for uptime checks. |
+| `/linear/install` | `INSTALL_SECRET` | Use only during install; rate-limit this route. |
+| `/linear/oauth/callback` | OAuth `state` | Must stay public for Linear OAuth callback. |
+| `/linear/webhook` | Linear HMAC signature + timestamp | Must stay public for Linear; rate-limit invalid/noisy traffic at the proxy. |
+
 ## Operational notes
 
 Active run and queue state is currently in memory. A Node/systemd restart can lose an active run or queued follow-up prompt, although OAuth tokens and pi session history are persisted on disk.
 
-The current implementation targets one Linear workspace/install. Multi-workspace token selection hardening is future work.
+## Roadmap
+
+- Multi-workspace support. The current implementation targets one Linear workspace/install.
+- Better Linear app/install management for multiple installations.
+- Commands for model switching, thinking-level switching, session restart, and related runtime controls.
+- Investigate support for installed slash commands or command-like actions that can be executed from Linear.

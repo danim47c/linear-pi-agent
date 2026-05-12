@@ -40,6 +40,13 @@ Ask the user for only the values you cannot discover:
 - Linear client ID
 - Linear client secret
 - Linear webhook secret
+- install secret for `/linear/install`, or generate a random one yourself
+
+Generate `INSTALL_SECRET` yourself if the user does not provide one:
+
+```bash
+openssl rand -base64 32
+```
 
 Tell the user to create the Linear app manually:
 
@@ -88,6 +95,7 @@ Create `.env` from the user's values. Prefer absolute paths.
 LINEAR_CLIENT_ID=...
 LINEAR_CLIENT_SECRET=...
 LINEAR_WEBHOOK_SECRET=...
+INSTALL_SECRET=...
 LINEAR_REDIRECT_URI=https://YOUR_DOMAIN/linear/oauth/callback
 BASE_URL=https://YOUR_DOMAIN
 PI_WORKDIR=/absolute/path/to/target/repo
@@ -162,7 +170,7 @@ Do not continue until the public health check works.
 Open or give the user this URL:
 
 ```text
-https://YOUR_DOMAIN/linear/install
+https://YOUR_DOMAIN/linear/install?install_secret=INSTALL_SECRET
 ```
 
 The user must complete the browser OAuth flow. After they do, verify token storage exists and inspect logs if needed.
