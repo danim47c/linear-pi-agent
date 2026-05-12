@@ -1,10 +1,10 @@
-# Clanker Linear Agent
+# Pi Linear Agent
 
-Versioned source for the Clanker custom Linear agent used by `your-domain.example`.
+Versioned source for the Pi custom Linear agent used by `your-domain.example`.
 
 ## Repository placement
 
-This agent intentionally lives in its own repo at `/home/exedev/clanker-linear-agent`, outside the Your app Rails repo. The agent can still operate on Your app through `PI_WORKDIR=/home/exedev/your-app`, while its code, package files, deployment docs, and systemd template stay independently versioned.
+This agent intentionally lives in its own repo at `/home/exedev/linear-pi-agent`, outside the Your app Rails repo. The agent can still operate on Your app through `PI_WORKDIR=/home/exedev/your-app`, while its code, package files, deployment docs, and systemd template stay independently versioned.
 
 Production secrets and mutable OAuth/pi session state also live under this directory, but are ignored by git.
 
@@ -20,7 +20,7 @@ Ignored locally: `.env`, `data/*.json`, `data/pi-sessions/`, `dist/`, `node_modu
 
 ## Required env vars
 
-Create a production `.env` outside git at `/home/exedev/clanker-linear-agent/.env`:
+Create a production `.env` outside git at `/home/exedev/linear-pi-agent/.env`:
 
 ```dotenv
 LINEAR_CLIENT_ID=
@@ -37,8 +37,8 @@ PI_PROGRESS_DEBOUNCE_MS=3000
 PI_TIMEOUT_MS=1800000
 HOST=127.0.0.1
 PORT=8787
-TOKEN_STORE_PATH=/home/exedev/clanker-linear-agent/data/linear-tokens.json
-STATE_STORE_PATH=/home/exedev/clanker-linear-agent/data/oauth-states.json
+TOKEN_STORE_PATH=/home/exedev/linear-pi-agent/data/linear-tokens.json
+STATE_STORE_PATH=/home/exedev/linear-pi-agent/data/oauth-states.json
 ```
 
 Use absolute `TOKEN_STORE_PATH` and `STATE_STORE_PATH` in production so restarts/deploys do not depend on the current working directory.
@@ -55,7 +55,7 @@ Rails serves public `/linear/*` and `/healthz` routes on port 3000 and proxies t
 ## Build and local checks
 
 ```bash
-cd /home/exedev/clanker-linear-agent
+cd /home/exedev/linear-pi-agent
 npm install
 npm run typecheck
 npm run build
@@ -64,24 +64,29 @@ npm run build
 Smoke tests that require configured secrets and/or a running service:
 
 ```bash
+# Hit the agent directly by default
 npm run smoke:webhook
 npm run smoke:linear
+
+# If you keep a Rails proxy on 3000, point smoke:webhook there instead:
+# WEBHOOK_SMOKE_URL=http://127.0.0.1:3000/linear/webhook npm run smoke:webhook
 ```
 
 Health checks:
 
 ```bash
 curl http://127.0.0.1:8787/healthz
-curl http://127.0.0.1:3000/healthz
+# If proxying through Rails:
+# curl http://127.0.0.1:3000/healthz
 ```
 
 ## Deploy / restart workflow
 
-1. Update code in `/home/exedev/clanker-linear-agent` and commit it.
+1. Update code in `/home/exedev/linear-pi-agent` and commit it.
 2. Build and install/reload the service:
 
    ```bash
-   cd /home/exedev/clanker-linear-agent
+   cd /home/exedev/linear-pi-agent
    npm install
    npm run typecheck
    npm run build

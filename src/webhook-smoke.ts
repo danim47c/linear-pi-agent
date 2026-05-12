@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { config } from "./config.js";
 
-const webhookUrl = process.env.WEBHOOK_SMOKE_URL ?? "http://127.0.0.1:3000/linear/webhook";
+const webhookUrl = process.env.WEBHOOK_SMOKE_URL ?? `http://127.0.0.1:${config.PORT}/linear/webhook`;
 const body = Buffer.from(JSON.stringify({
   type: "WebhookSmoke",
   action: "test",

@@ -26,6 +26,7 @@ export type PiRunResult = {
 type ManagedSession = {
   session: AgentSession;
   unsubscribe: () => void;
+  reporterRef: { current: ProgressReporter };
 };
 
 const sdkSessions = new Map<string, ManagedSession>();
@@ -90,11 +91,10 @@ function guidanceText(payload: AgentSessionWebhook): string {
 
 export function buildPiPrompt(payload: AgentSessionWebhook): string {
   const issue = payload.agentSession?.issue;
-  const followUp = payload.agentActivity?.content?.body;
   const promptContext = payload.promptContext ?? payload.agentSession?.promptContext;
 
   return [
-    "You are running as Clanker, a Linear custom agent powered by pi.",
+    "You are running as Pi, a Linear custom agent powered by pi.",
     "Work directly in this repository with full control. Make code changes when appropriate.",
     "Do not expose secrets. Be concise in your final summary for Linear.",
     "",
@@ -103,12 +103,35 @@ export function buildPiPrompt(payload: AgentSessionWebhook): string {
     issue?.title ? `- Title: ${issue.title}` : undefined,
     issue?.url ? `- URL: ${issue.url}` : undefined,
     issue?.description ? `- Description:\n${issue.description}` : undefined,
-    followUp ? `\nUser follow-up prompt:\n${followUp}` : undefined,
     promptContext ? `\nLinear prompt context:\n${promptContext}` : undefined,
     guidanceText(payload),
     "",
     "When finished, summarize what changed, tests/checks run, and any remaining follow-up.",
   ].filter(Boolean).join("\n");
+}
+
+export function buildPiFollowUpPrompt(payload: AgentSessionWebhook): string {
+  const followUp = payload.agentActivity?.content?.body?.trim();
+  if (followUp) {
+    return [
+      "Linear user follow-up:",
+      followUp,
+      "",
+      "Continue from the existing session context. Be concise in your final summary for Linear.",
+    ].join("\n");
+  }
+
+  const promptContext = payload.promptContext ?? payload.agentSession?.promptContext;
+  if (promptContext) {
+    return [
+      "Linear follow-up context:",
+      promptContext,
+      "",
+      "Continue from the existing session context. Be concise in your final summary for Linear.",
+    ].join("\n");
+  }
+
+  return "Linear sent a follow-up event without message text. Continue from the existing session context and summarize any useful status.";
 }
 
 export function summarizePiResult(result: PiRunResult): string {
@@ -137,7 +160,12 @@ class ProgressReporter {
   }
 
   action(action: string, parameter: string): void {
-    this.queue({ type: "action", body: `${action}: ${parameter}`, action: truncate(action, 80), parameter: truncate(parameter) });
+    // Keep tool/progress updates visible without leaving action-type entries
+    // that may be interpreted by Linear as still-active work state.
+    this.queue({
+      type: "thought",
+      body: `${action}: ${parameter}`.trim(),
+    });
   }
 
   private queue(update: { type: "thought" | "action"; body: string; action?: string; parameter?: string }): void {
@@ -159,7 +187,7 @@ class ProgressReporter {
       if (update.type === "action") {
         await createAgentActivity(this.agentSessionId, {
           type: "action",
-          action: update.action ?? "Working",
+          action: update.action ?? "Processing",
           parameter: update.parameter ?? update.body,
         });
       } else {
@@ -173,7 +201,10 @@ class ProgressReporter {
 
 async function getSdkSession(agentSessionId: string, reporter: ProgressReporter): Promise<ManagedSession> {
   const existing = sdkSessions.get(agentSessionId);
-  if (existing) return existing;
+  if (existing) {
+    existing.reporterRef.current = reporter;
+    return existing;
+  }
 
   const sessionDir = path.resolve(config.PI_SESSION_DIR);
   await mkdir(sessionDir, { recursive: true });
@@ -181,10 +212,11 @@ async function getSdkSession(agentSessionId: string, reporter: ProgressReporter)
   const sessionManager = SessionManager.open(sessionFile, sessionDir, config.PI_WORKDIR);
   const { session } = await createAgentSession({ cwd: config.PI_WORKDIR, sessionManager });
 
-  const unsubscribe = session.subscribe((event) => handleSdkEvent(event, reporter));
+  const reporterRef = { current: reporter };
+  const unsubscribe = session.subscribe((event) => handleSdkEvent(event, reporterRef.current));
   await session.bindExtensions({});
 
-  const managed = { session, unsubscribe };
+  const managed = { session, unsubscribe, reporterRef };
   sdkSessions.set(agentSessionId, managed);
   return managed;
 }
@@ -200,24 +232,19 @@ function disposeSdkSession(agentSessionId: string): void {
 function handleSdkEvent(event: AgentSessionEvent, reporter: ProgressReporter): void {
   switch (event.type) {
     case "agent_start":
-      reporter.thought("pi started working…");
       break;
     case "tool_execution_start":
-      reporter.action(`Running ${event.toolName}`, summarizeToolArgs(event.toolName, event.args));
       break;
-    case "message_end": {
-      const text = messageText(event.message);
-      if (text) reporter.thought(text);
+    case "message_end":
+      // Do not mirror assistant messages as progress thoughts. Linear uses the
+      // latest activity to infer session state; duplicating the final answer as
+      // a thought after the response can move a completed session back to active.
       break;
-    }
     case "compaction_start":
-      reporter.thought("Compacting context before continuing…");
       break;
     case "auto_retry_start":
-      reporter.thought(`Retrying after model error (${event.attempt}/${event.maxAttempts})…`);
       break;
     case "queue_update":
-      if (event.followUp.length) reporter.thought(`${event.followUp.length} follow-up prompt(s) queued.`);
       break;
   }
 }
@@ -230,7 +257,7 @@ export async function runPi(payload: AgentSessionWebhook): Promise<PiRunResult> 
   const agentSessionId = payload.agentSession?.id;
   if (!agentSessionId) throw new Error("agentSession.id is required to run pi");
 
-  const prompt = buildPiPrompt(payload);
+  const prompt = payload.action === "prompted" ? buildPiFollowUpPrompt(payload) : buildPiPrompt(payload);
   const reporter = new ProgressReporter(agentSessionId);
   const managed = await getSdkSession(agentSessionId, reporter);
   let finalText = "";
@@ -293,7 +320,6 @@ export async function runPi(payload: AgentSessionWebhook): Promise<PiRunResult> 
   } finally {
     if (timeout) clearTimeout(timeout);
     captureFinal();
-    await reporter.flush();
   }
 }
 

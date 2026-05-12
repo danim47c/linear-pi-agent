@@ -1,5 +1,5 @@
 import { createAgentActivity } from "./linear.js";
-import { abortPiSession, buildPiPrompt, queuePiFollowUp, runPi } from "./pi-runner.js";
+import { abortPiSession, buildPiFollowUpPrompt, queuePiFollowUp, runPi } from "./pi-runner.js";
 
 type SessionState = {
   running: boolean;
@@ -59,8 +59,8 @@ export async function handleAgentSessionWebhook(payload: AgentSessionWebhook): P
   if (isStopPayload(payload)) {
     console.log("agent session stop requested", { agentSessionId, action: payload.action, running: state.running });
     state.pendingPayload = undefined;
-    const aborted = await abortPiSession(agentSessionId);
     state.running = false;
+    const aborted = await abortPiSession(agentSessionId);
     await createAgentActivity(agentSessionId, {
       type: "error",
       body: aborted ? "Stopped by user." : "Stop requested; no active pi run was in progress.",
@@ -69,40 +69,27 @@ export async function handleAgentSessionWebhook(payload: AgentSessionWebhook): P
   }
 
   if (payload.action === "created") {
-    await createAgentActivity(
-      agentSessionId,
-      {
-        type: "thought",
-        body: `Clanker accepted ${issueLabel(payload)} and is starting pi.`,
-      },
-      { ephemeral: true },
-    );
-
     startRun(agentSessionId, payload, state);
     return;
   }
 
   if (payload.action === "prompted") {
     if (state.running) {
-      if (await queuePiFollowUp(agentSessionId, buildPiPrompt(payload))) {
+      if (await queuePiFollowUp(agentSessionId, buildPiFollowUpPrompt(payload))) {
         await createAgentActivity(agentSessionId, {
           type: "thought",
-          body: "Clanker received your follow-up. It is queued in the active pi session.",
+          body: "Pi received your follow-up. It is queued in the active pi session.",
         });
       } else {
         state.pendingPayload = payload;
         await createAgentActivity(agentSessionId, {
           type: "thought",
-          body: "Clanker received your follow-up. It will run after the current pi task finishes.",
+          body: "Pi received your follow-up. It will run after the current pi task finishes.",
         });
       }
       return;
     }
 
-    await createAgentActivity(agentSessionId, {
-      type: "thought",
-      body: "Clanker received your follow-up and is starting pi.",
-    });
     startRun(agentSessionId, payload, state);
   }
 }
@@ -112,7 +99,7 @@ function startRun(agentSessionId: string, payload: AgentSessionWebhook, state: S
     state.pendingPayload = payload;
     void createAgentActivity(agentSessionId, {
       type: "thought",
-      body: "A Clanker run is already active for this session; this request is queued.",
+      body: "A Pi run is already active for this session; this request is queued.",
     }).catch((error: Error) => console.error("failed to create queued activity", { message: error.message }));
     return;
   }
@@ -125,7 +112,7 @@ function startRun(agentSessionId: string, payload: AgentSessionWebhook, state: S
     console.error("pi run crashed", { agentSessionId, message: error.message });
     await createAgentActivity(agentSessionId, {
       type: "error",
-      body: `Clanker failed to start or run pi: ${error.message}`,
+      body: `Pi failed to start or run pi: ${error.message}`,
     }).catch((activityError: Error) => {
       console.error("failed to create pi crash activity", { message: activityError.message });
     });
@@ -133,12 +120,6 @@ function startRun(agentSessionId: string, payload: AgentSessionWebhook, state: S
 }
 
 async function runSession(agentSessionId: string, payload: AgentSessionWebhook, state: SessionState): Promise<void> {
-  await createAgentActivity(agentSessionId, {
-    type: "action",
-    action: "Starting pi",
-    parameter: issueLabel(payload),
-  });
-
   console.log("pi run started", { agentSessionId });
   const result = await runPi(payload);
   console.log("pi run finished", { agentSessionId, exitCode: result.exitCode, timedOut: result.timedOut });
@@ -149,6 +130,7 @@ async function runSession(agentSessionId: string, payload: AgentSessionWebhook, 
       body: result.summary,
     });
     console.log("linear response activity posted", { agentSessionId });
+
   } else {
     const reason = result.timedOut
       ? "pi timed out"
@@ -160,15 +142,12 @@ async function runSession(agentSessionId: string, payload: AgentSessionWebhook, 
     console.log("linear error activity posted", { agentSessionId, reason });
   }
 
+  // Mark run state as not running once run attempt finishes.
   state.running = false;
 
   const pendingPayload = state.pendingPayload;
   if (pendingPayload) {
     state.pendingPayload = undefined;
-    await createAgentActivity(agentSessionId, {
-      type: "thought",
-      body: "Clanker is starting the queued follow-up prompt.",
-    });
     startRun(agentSessionId, pendingPayload, state);
   }
 }

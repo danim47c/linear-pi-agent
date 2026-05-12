@@ -1,15 +1,15 @@
 [Unit]
-Description=Clanker Linear Agent for pi
-Documentation=file:/home/exedev/clanker-linear-agent/README.md
+Description=Pi Linear Agent for pi
+Documentation=file:/home/exedev/linear-pi-agent/README.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/exedev/clanker-linear-agent
-EnvironmentFile=/home/exedev/clanker-linear-agent/.env
-Environment=TOKEN_STORE_PATH=/home/exedev/clanker-linear-agent/data/linear-tokens.json
-Environment=STATE_STORE_PATH=/home/exedev/clanker-linear-agent/data/oauth-states.json
+WorkingDirectory=/home/exedev/linear-pi-agent
+EnvironmentFile=/home/exedev/linear-pi-agent/.env
+Environment=TOKEN_STORE_PATH=/home/exedev/linear-pi-agent/data/linear-tokens.json
+Environment=STATE_STORE_PATH=/home/exedev/linear-pi-agent/data/oauth-states.json
 Environment=PATH=/home/exedev/.local/share/mise/installs/node/latest/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/home/exedev/.local/share/mise/installs/node/latest/bin/node dist/server.js
 Restart=on-failure
