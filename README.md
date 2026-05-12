@@ -1,6 +1,6 @@
 # Linear Pi Agent
 
-Connect your own `pi` coding agent to Linear. This service is one way to do that: Linear sends Agent Session events to this app, this app runs `pi` against your chosen repository, and progress/results are sent back to Linear.
+Connect your own [`pi`](https://github.com/earendil-works/pi) coding agent to Linear. This service is one way to do that: Linear sends Agent Session events to this app, this app runs `pi` against your chosen repository, and progress/results are sent back to Linear.
 
 The agent service is intended to live in its own repository, separate from the application repository it operates on. Configure the target application repository with `PI_WORKDIR`.
 
@@ -78,6 +78,10 @@ By default the service listens on `127.0.0.1:8787`. Expose these routes publicly
 - `/linear/oauth/callback`
 - `/linear/webhook`
 - `/healthz` optional, for health checks
+
+## Recommended hosting
+
+I recommend running this on [exe.dev](https://exe.dev) or a small [Hetzner](https://www.hetzner.com/cloud/) VPS: something that can stay online, receive HTTPS webhooks from Linear, and access the repository you want `pi` to work on.
 
 ## Configuration
 
