@@ -51,7 +51,7 @@ export function createApp() {
   app.disable("x-powered-by");
 
   app.get("/healthz", (_req: Request, res: Response) => {
-    res.json({ ok: true, service: "pi-linear-agent" });
+    res.json({ ok: true, service: "linear-pi-agent" });
   });
 
   app.get("/linear/install", async (_req: Request, res: Response, next: express.NextFunction) => {
@@ -144,6 +144,6 @@ export function createApp() {
 if (process.env.NODE_ENV !== "test") {
   const app = createApp();
   app.listen(config.PORT, config.HOST, () => {
-    console.log("pi linear agent listening", publicConfig());
+    console.log("linear pi agent listening", publicConfig());
   });
 }

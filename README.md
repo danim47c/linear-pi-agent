@@ -1,6 +1,6 @@
-# Pi Linear Agent
+# Linear Pi Agent
 
-Versioned source for a Pi-powered custom Linear agent.
+Versioned source for a Linear Pi agent.
 
 ## Repository placement
 
@@ -13,7 +13,7 @@ Production secrets and mutable OAuth/pi session state should live outside git an
 - `src/` — TypeScript agent source
 - `package.json` / `package-lock.json` — pinned Node dependencies
 - `.env.example` — non-secret configuration template
-- `systemd/pi-linear-agent.service.template` — user systemd unit template
+- `systemd/linear-pi-agent.service.template` — user systemd unit template
 - `README.md` — deploy and operating notes
 
 Ignored locally: `.env`, `data/*.json`, `data/pi-sessions/`, `dist/`, `node_modules/`, and logs.
@@ -86,23 +86,23 @@ curl http://127.0.0.1:8787/healthz
    npm install
    npm run typecheck
    npm run build
-   install -Dm644 systemd/pi-linear-agent.service.template \
-     ~/.config/systemd/user/pi-linear-agent.service
+   install -Dm644 systemd/linear-pi-agent.service.template \
+     ~/.config/systemd/user/linear-pi-agent.service
    systemctl --user daemon-reload
-   systemctl --user restart pi-linear-agent
-   systemctl --user status pi-linear-agent
+   systemctl --user restart linear-pi-agent
+   systemctl --user status linear-pi-agent
    ```
 
 3. Watch logs:
 
    ```bash
-   journalctl --user -u pi-linear-agent -f
+   journalctl --user -u linear-pi-agent -f
    ```
 
 To enable startup after host reboot:
 
 ```bash
-systemctl --user enable pi-linear-agent
+systemctl --user enable linear-pi-agent
 loginctl enable-linger "$USER"
 ```
 
