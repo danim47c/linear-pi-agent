@@ -4,8 +4,6 @@ Connect your own `pi` coding agent to Linear. This service is one way to do that
 
 The agent service is intended to live in its own repository, separate from the application repository it operates on. Configure the target application repository with `PI_WORKDIR`.
 
-Repository: https://github.com/hiasinho/linear-pi-agent
-
 ## Easy install with a coding agent
 
 If you want the easiest setup path, copy the contents of [`INSTALL.md`](./INSTALL.md) into your coding agent and ask it to follow the instructions. It will do the local setup steps it can do automatically and prompt you only for Linear setup, secrets, browser actions, or infrastructure details it cannot complete itself.
