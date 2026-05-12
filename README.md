@@ -13,7 +13,7 @@ Production secrets and mutable OAuth/pi session state also live under this direc
 - `src/` — TypeScript agent source
 - `package.json` / `package-lock.json` — pinned Node dependencies
 - `.env.example` — non-secret configuration template
-- `systemd/clanker-linear-agent.service.template` — user systemd unit template
+- `systemd/pi-linear-agent.service.template` — user systemd unit template
 - `README.md` — deploy and operating notes
 
 Ignored locally: `.env`, `data/*.json`, `data/pi-sessions/`, `dist/`, `node_modules/`, and logs.
@@ -90,23 +90,23 @@ curl http://127.0.0.1:8787/healthz
    npm install
    npm run typecheck
    npm run build
-   install -Dm644 systemd/clanker-linear-agent.service.template \
-     /home/exedev/.config/systemd/user/clanker-linear-agent.service
+   install -Dm644 systemd/pi-linear-agent.service.template \
+     /home/exedev/.config/systemd/user/pi-linear-agent.service
    systemctl --user daemon-reload
-   systemctl --user restart clanker-linear-agent
-   systemctl --user status clanker-linear-agent
+   systemctl --user restart pi-linear-agent
+   systemctl --user status pi-linear-agent
    ```
 
 3. Watch logs:
 
    ```bash
-   journalctl --user -u clanker-linear-agent -f
+   journalctl --user -u pi-linear-agent -f
    ```
 
 To enable startup after host reboot:
 
 ```bash
-systemctl --user enable clanker-linear-agent
+systemctl --user enable pi-linear-agent
 sudo loginctl enable-linger exedev
 ```
 
