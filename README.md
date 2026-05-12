@@ -1,12 +1,12 @@
 # Pi Linear Agent
 
-Versioned source for the Pi custom Linear agent used by `your-domain.example`.
+Versioned source for a Pi-powered custom Linear agent.
 
 ## Repository placement
 
-This agent intentionally lives in its own repo at `/home/exedev/linear-pi-agent`, outside the Your app Rails repo. The agent can still operate on Your app through `PI_WORKDIR=/home/exedev/your-app`, while its code, package files, deployment docs, and systemd template stay independently versioned.
+This service is designed to live in its own repository, separate from the application repository it operates on. Configure the target application workspace with `PI_WORKDIR`, while this agent's code, package files, deployment docs, and systemd template stay independently versioned.
 
-Production secrets and mutable OAuth/pi session state also live under this directory, but are ignored by git.
+Production secrets and mutable OAuth/pi session state should live outside git and are ignored by the included `.gitignore`.
 
 ## Files tracked here
 
@@ -20,7 +20,7 @@ Ignored locally: `.env`, `data/*.json`, `data/pi-sessions/`, `dist/`, `node_modu
 
 ## Required env vars
 
-Create a production `.env` outside git at `/home/exedev/linear-pi-agent/.env`:
+Create a production `.env` outside git by copying `.env.example` and filling in your own values:
 
 ```dotenv
 LINEAR_CLIENT_ID=
@@ -28,7 +28,7 @@ LINEAR_CLIENT_SECRET=
 LINEAR_WEBHOOK_SECRET=
 LINEAR_REDIRECT_URI=https://your-domain.example/linear/oauth/callback
 BASE_URL=https://your-domain.example
-PI_WORKDIR=/home/exedev/your-app
+PI_WORKDIR=/path/to/your/app
 PI_COMMAND=pi
 PI_MODE=json
 PI_RUNNER=sdk
@@ -37,11 +37,11 @@ PI_PROGRESS_DEBOUNCE_MS=3000
 PI_TIMEOUT_MS=1800000
 HOST=127.0.0.1
 PORT=8787
-TOKEN_STORE_PATH=/home/exedev/linear-pi-agent/data/linear-tokens.json
-STATE_STORE_PATH=/home/exedev/linear-pi-agent/data/oauth-states.json
+TOKEN_STORE_PATH=./data/linear-tokens.json
+STATE_STORE_PATH=./data/oauth-states.json
 ```
 
-Use absolute `TOKEN_STORE_PATH` and `STATE_STORE_PATH` in production so restarts/deploys do not depend on the current working directory.
+Use absolute `TOKEN_STORE_PATH` and `STATE_STORE_PATH` in production if restarts/deploys should not depend on the current working directory.
 
 ## Linear app settings
 
@@ -50,48 +50,44 @@ Use absolute `TOKEN_STORE_PATH` and `STATE_STORE_PATH` in production so restarts
 - Scopes: `read,write,app:assignable,app:mentionable`
 - Enable Agent Session events.
 
-Rails serves public `/linear/*` and `/healthz` routes on port 3000 and proxies them to this service on `127.0.0.1:8787`.
+Expose public `/linear/*` and `/healthz` routes to this service, which listens on `127.0.0.1:8787` by default.
 
 ## Build and local checks
 
 ```bash
-cd /home/exedev/linear-pi-agent
 npm install
 npm run typecheck
 npm run build
 ```
 
-Smoke tests that require configured secrets and/or a running service:
+Smoke tests require configured secrets and/or a running service:
 
 ```bash
 # Hit the agent directly by default
 npm run smoke:webhook
 npm run smoke:linear
 
-# If you keep a Rails proxy on 3000, point smoke:webhook there instead:
+# If you keep a reverse proxy on another port, point smoke:webhook there instead:
 # WEBHOOK_SMOKE_URL=http://127.0.0.1:3000/linear/webhook npm run smoke:webhook
 ```
 
-Health checks:
+Health check:
 
 ```bash
 curl http://127.0.0.1:8787/healthz
-# If proxying through Rails:
-# curl http://127.0.0.1:3000/healthz
 ```
 
 ## Deploy / restart workflow
 
-1. Update code in `/home/exedev/linear-pi-agent` and commit it.
+1. Update code and commit it.
 2. Build and install/reload the service:
 
    ```bash
-   cd /home/exedev/linear-pi-agent
    npm install
    npm run typecheck
    npm run build
    install -Dm644 systemd/pi-linear-agent.service.template \
-     /home/exedev/.config/systemd/user/pi-linear-agent.service
+     ~/.config/systemd/user/pi-linear-agent.service
    systemctl --user daemon-reload
    systemctl --user restart pi-linear-agent
    systemctl --user status pi-linear-agent
@@ -107,7 +103,7 @@ To enable startup after host reboot:
 
 ```bash
 systemctl --user enable pi-linear-agent
-sudo loginctl enable-linger exedev
+loginctl enable-linger "$USER"
 ```
 
 ## pi integration
@@ -118,6 +114,6 @@ Progress messages are truncated and obvious secret-looking values are redacted b
 
 ## Recovery behavior and limitations
 
-Active run/queue state is still in memory. A Node/systemd restart can lose an active run or queued follow-up prompt, although OAuth tokens and pi session history are persisted on disk. This is the remaining scope of STR-11.
+Active run/queue state is still in memory. A Node/systemd restart can lose an active run or queued follow-up prompt, although OAuth tokens and pi session history are persisted on disk.
 
-The current deployment targets one Linear workspace/install. Multi-workspace token selection hardening is remaining scope of STR-13.
+The current implementation targets one Linear workspace/install. Multi-workspace token selection hardening is future work.
