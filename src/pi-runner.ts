@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
   createAgentSession,
+  initTheme,
   SessionManager,
   type AgentSession,
   type AgentSessionEvent,
@@ -12,6 +13,11 @@ import type { AgentSessionWebhook } from "./session-runner.js";
 
 const MAX_LINEAR_BODY_CHARS = 8_000;
 const MAX_PROGRESS_CHARS = 220;
+
+// Some installed pi extensions render background widgets even when pi is used
+// through the SDK. Initialize the global theme so those non-interactive hooks
+// do not crash the Linear service with "Theme not initialized".
+initTheme(process.env.PI_THEME ?? "light", false);
 
 export type PiRunResult = {
   exitCode: number | null;
@@ -76,7 +82,7 @@ function summarizeToolArgs(toolName: string, args: unknown): string {
   const record = args as Record<string, unknown>;
   const pathValue = record.path ?? record.file_path ?? record.filePath;
   if (typeof pathValue === "string") return `${toolName} ${pathValue}`;
-  const command = record.command;
+  const command = record.command ?? record.cmd;
   if (typeof command === "string") return `${toolName} ${command}`;
   const query = record.query;
   if (typeof query === "string") return `${toolName} ${query}`;
@@ -232,8 +238,16 @@ function disposeSdkSession(agentSessionId: string): void {
 function handleSdkEvent(event: AgentSessionEvent, reporter: ProgressReporter): void {
   switch (event.type) {
     case "agent_start":
+      reporter.thought("Pi is starting the coding session.");
+      break;
+    case "turn_start":
+      reporter.thought("Pi is thinking.");
       break;
     case "tool_execution_start":
+      reporter.action(`Running ${event.toolName}`, summarizeToolArgs(event.toolName, event.args));
+      break;
+    case "tool_execution_end":
+      if (event.isError) reporter.thought(`${event.toolName} reported an error; Pi is adjusting.`);
       break;
     case "message_end":
       // Do not mirror assistant messages as progress thoughts. Linear uses the
@@ -241,8 +255,10 @@ function handleSdkEvent(event: AgentSessionEvent, reporter: ProgressReporter): v
       // a thought after the response can move a completed session back to active.
       break;
     case "compaction_start":
+      reporter.thought("Pi is compacting context before continuing.");
       break;
     case "auto_retry_start":
+      reporter.thought(`Pi is retrying after an error (${event.attempt}/${event.maxAttempts}).`);
       break;
     case "queue_update":
       break;
