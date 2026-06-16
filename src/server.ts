@@ -8,9 +8,14 @@ import { isFreshWebhookTimestamp, verifyLinearSignature } from "./signature.js";
 type LinearWebhookPayload = {
   type?: string;
   action?: string;
+  organizationId?: string;
   webhookTimestamp?: number;
   agentSession?: {
     id?: string;
+    organization?: {
+      id?: string;
+      urlKey?: string;
+    };
     issue?: {
       identifier?: string;
       title?: string;
@@ -33,6 +38,7 @@ function logWebhook(payload: LinearWebhookPayload) {
   console.log("linear webhook received", {
     type: payload.type,
     action: payload.action,
+    organizationId: payload.organizationId ?? payload.agentSession?.organization?.id,
     agentSessionId: payload.agentSession?.id,
     issue: payload.agentSession?.issue?.identifier,
     activityType: agentActivity?.content?.type,
@@ -110,6 +116,7 @@ export function createApp() {
       return res.type("text/plain").send(
         [
           "Pi is installed in Linear.",
+          `Workspace: ${install.organizationName ?? install.organizationId ?? "unknown"}`,
           `App user ID: ${install.viewerAppUserId}`,
           "You can close this tab.",
           "",

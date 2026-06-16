@@ -5,10 +5,16 @@ type SessionState = {
   running: boolean;
   pendingPayload?: AgentSessionWebhook;
   lastStartedAt?: number;
+  installationKey?: string;
 };
 
 export type AgentSessionWebhook = {
   action?: string;
+  organizationId?: string;
+  organization?: {
+    id?: string;
+    urlKey?: string;
+  };
   agentActivity?: {
     content?: {
       body?: string;
@@ -18,6 +24,10 @@ export type AgentSessionWebhook = {
   agentSession?: {
     id?: string;
     promptContext?: string;
+    organization?: {
+      id?: string;
+      urlKey?: string;
+    };
     issue?: {
       identifier?: string;
       title?: string;
@@ -34,6 +44,10 @@ const sessions = new Map<string, SessionState>();
 function issueLabel(payload: AgentSessionWebhook): string {
   const issue = payload.agentSession?.issue;
   return issue?.identifier ? `${issue.identifier}: ${issue.title ?? "Untitled"}` : "Linear agent session";
+}
+
+function installationKeyFromWebhook(payload: AgentSessionWebhook): string | undefined {
+  return payload.organizationId ?? payload.organization?.id ?? payload.agentSession?.organization?.id;
 }
 
 function isStopPayload(payload: AgentSessionWebhook): boolean {
@@ -54,7 +68,10 @@ export async function handleAgentSessionWebhook(payload: AgentSessionWebhook): P
   }
 
   const state = sessions.get(agentSessionId) ?? { running: false };
+  state.installationKey = installationKeyFromWebhook(payload) ?? state.installationKey;
   sessions.set(agentSessionId, state);
+
+  const activityOptions = { installationKey: state.installationKey };
 
   if (isStopPayload(payload)) {
     console.log("agent session stop requested", { agentSessionId, action: payload.action, running: state.running });
@@ -64,7 +81,7 @@ export async function handleAgentSessionWebhook(payload: AgentSessionWebhook): P
     await createAgentActivity(agentSessionId, {
       type: "error",
       body: aborted ? "Stopped by user." : "Stop requested; no active pi run was in progress.",
-    });
+    }, activityOptions);
     return;
   }
 
@@ -79,13 +96,13 @@ export async function handleAgentSessionWebhook(payload: AgentSessionWebhook): P
         await createAgentActivity(agentSessionId, {
           type: "thought",
           body: "Pi received your follow-up. It is queued in the active pi session.",
-        });
+        }, activityOptions);
       } else {
         state.pendingPayload = payload;
         await createAgentActivity(agentSessionId, {
           type: "thought",
           body: "Pi received your follow-up. It will run after the current pi task finishes.",
-        });
+        }, activityOptions);
       }
       return;
     }
@@ -100,7 +117,7 @@ function startRun(agentSessionId: string, payload: AgentSessionWebhook, state: S
     void createAgentActivity(agentSessionId, {
       type: "thought",
       body: "A Pi run is already active for this session; this request is queued.",
-    }).catch((error: Error) => console.error("failed to create queued activity", { message: error.message }));
+    }, { installationKey: state.installationKey }).catch((error: Error) => console.error("failed to create queued activity", { message: error.message }));
     return;
   }
 
@@ -113,7 +130,7 @@ function startRun(agentSessionId: string, payload: AgentSessionWebhook, state: S
     await createAgentActivity(agentSessionId, {
       type: "error",
       body: `Pi failed to start or run pi: ${error.message}`,
-    }).catch((activityError: Error) => {
+    }, { installationKey: state.installationKey }).catch((activityError: Error) => {
       console.error("failed to create pi crash activity", { message: activityError.message });
     });
   });
@@ -121,21 +138,23 @@ function startRun(agentSessionId: string, payload: AgentSessionWebhook, state: S
 
 async function runSession(agentSessionId: string, payload: AgentSessionWebhook, state: SessionState): Promise<void> {
   console.log("pi run started", { agentSessionId });
+  const activityOptions = { installationKey: state.installationKey };
+
   await createAgentActivity(agentSessionId, {
     type: "thought",
     body: `Pi received ${issueLabel(payload)} and started working.`,
-  }).catch((error: Error) => {
+  }, activityOptions).catch((error: Error) => {
     console.error("failed to create start activity", { agentSessionId, message: error.message });
   });
 
-  const result = await runPi(payload);
+  const result = await runPi(payload, activityOptions);
   console.log("pi run finished", { agentSessionId, exitCode: result.exitCode, timedOut: result.timedOut });
 
   if (result.exitCode === 0 && !result.timedOut) {
     await createAgentActivity(agentSessionId, {
       type: "response",
       body: result.summary,
-    });
+    }, activityOptions);
     console.log("linear response activity posted", { agentSessionId });
 
   } else {
@@ -145,7 +164,7 @@ async function runSession(agentSessionId: string, payload: AgentSessionWebhook, 
     await createAgentActivity(agentSessionId, {
       type: "error",
       body: `${reason}\n\n${result.summary}`,
-    });
+    }, activityOptions);
     console.log("linear error activity posted", { agentSessionId, reason });
   }
 

@@ -21,7 +21,8 @@ Linear Agent Session
 The service:
 
 - exposes OAuth install and webhook endpoints for Linear
-- stores Linear OAuth tokens locally
+- stores Linear OAuth tokens locally per workspace/install
+- selects the correct Linear installation token for webhooks that include `organizationId`
 - keeps a persistent pi SDK session per Linear `agentSession.id`
 - supports follow-up prompts on active sessions
 - handles stop/cancel requests by aborting the pi session
@@ -62,7 +63,7 @@ After the service is running, install the app by visiting:
 https://your-domain.example/linear/install?install_secret=YOUR_INSTALL_SECRET
 ```
 
-This redirects through Linear OAuth and stores the app token locally. `INSTALL_SECRET` protects the install endpoint so random visitors cannot start an install flow against your service.
+This redirects through Linear OAuth and stores the app token locally. Repeat this URL once per Linear workspace you want to connect. `INSTALL_SECRET` protects the install endpoint so random visitors cannot start an install flow against your service.
 
 ## Requirements
 
@@ -210,11 +211,11 @@ Public endpoint expectations:
 
 ## Operational notes
 
-Active run and queue state is currently in memory. A Node/systemd restart can lose an active run or queued follow-up prompt, although OAuth tokens and pi session history are persisted on disk.
+Linear OAuth tokens are stored by workspace/organization when Linear exposes `organizationId` or `viewer.organization.id`; older single-install token stores still work through the default install fallback. Active run and queue state is currently in memory. A Node/systemd restart can lose an active run or queued follow-up prompt, although OAuth tokens and pi session history are persisted on disk.
 
 ## Roadmap
 
-- Multi-workspace support. The current implementation targets one Linear workspace/install.
 - Better Linear app/install management for multiple installations.
+- Workspace/repository mapping and GitHub App-backed branch/PR creation.
 - Commands for model switching, thinking-level switching, session restart, and related runtime controls.
 - Investigate support for installed slash commands or command-like actions that can be executed from Linear.

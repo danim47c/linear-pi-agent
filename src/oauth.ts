@@ -13,6 +13,7 @@ type StateStore = {
 };
 
 type TokenStore = {
+  default_installation_key?: string;
   default_app_user_id?: string;
   installations: Record<string, TokenRecord & { installed_at: number; updated_at: number }>;
 };
@@ -116,50 +117,81 @@ async function exchangeCodeForToken(code: string): Promise<LinearTokenResponse> 
   return parsed as LinearTokenResponse;
 }
 
-async function fetchViewerAppUserId(accessToken: string): Promise<string> {
+type LinearInstallInfo = {
+  viewerAppUserId: string;
+  organizationId?: string;
+  organizationName?: string;
+  organizationUrlKey?: string;
+};
+
+async function fetchLinearInstallInfo(accessToken: string): Promise<LinearInstallInfo> {
   const response = await fetch(LINEAR_GRAPHQL_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${accessToken}`,
     },
-    body: JSON.stringify({ query: "query Me { viewer { id } }" }),
+    body: JSON.stringify({
+      query: `query Me {
+        viewer {
+          id
+          organization { id name urlKey }
+        }
+      }`,
+    }),
   });
 
-  const json = (await response.json()) as LinearGraphqlResponse<{ viewer?: { id?: string } }>;
+  const json = (await response.json()) as LinearGraphqlResponse<{
+    viewer?: {
+      id?: string;
+      organization?: { id?: string; name?: string; urlKey?: string } | null;
+    };
+  }>;
 
   if (!response.ok || json.errors?.length) {
     throw new Error(`Linear viewer query failed: ${json.errors?.[0]?.message ?? `HTTP ${response.status}`}`);
   }
 
-  const id = json.data?.viewer?.id;
-  if (!id) throw new Error("Linear viewer query did not return viewer.id");
-  return id;
+  const viewerAppUserId = json.data?.viewer?.id;
+  if (!viewerAppUserId) throw new Error("Linear viewer query did not return viewer.id");
+
+  return {
+    viewerAppUserId,
+    organizationId: json.data?.viewer?.organization?.id,
+    organizationName: json.data?.viewer?.organization?.name,
+    organizationUrlKey: json.data?.viewer?.organization?.urlKey,
+  };
 }
 
-async function saveToken(viewerAppUserId: string, token: LinearTokenResponse): Promise<void> {
+async function saveToken(installInfo: LinearInstallInfo, token: LinearTokenResponse): Promise<void> {
   const current = now();
   const store = await readJsonFile<TokenStore>(config.TOKEN_STORE_PATH, tokenStoreFallback());
+  const installationKey = installInfo.organizationId ?? installInfo.viewerAppUserId;
+  const existing = store.installations[installationKey];
 
-  store.default_app_user_id = viewerAppUserId;
-  store.installations[viewerAppUserId] = {
+  store.default_installation_key = installationKey;
+  store.default_app_user_id = installInfo.viewerAppUserId;
+  store.installations[installationKey] = {
     access_token: token.access_token,
     refresh_token: token.refresh_token,
     token_type: token.token_type,
     expires_at: current + token.expires_in * 1000,
     scope: token.scope,
-    viewer_app_user_id: viewerAppUserId,
-    installed_at: store.installations[viewerAppUserId]?.installed_at ?? current,
+    viewer_app_user_id: installInfo.viewerAppUserId,
+    organization_id: installInfo.organizationId,
+    organization_name: installInfo.organizationName,
+    organization_url_key: installInfo.organizationUrlKey,
+    installed_at: existing?.installed_at ?? current,
     updated_at: current,
   };
 
   await writePrivateJsonFile(config.TOKEN_STORE_PATH, store);
 }
 
-export async function completeOAuthInstall(code: string): Promise<{ viewerAppUserId: string; scope?: string | string[] }> {
+export async function completeOAuthInstall(code: string): Promise<LinearInstallInfo & { scope?: string | string[] }> {
   const token = await exchangeCodeForToken(code);
-  const viewerAppUserId = await fetchViewerAppUserId(token.access_token);
-  await saveToken(viewerAppUserId, token);
+  const installInfo = await fetchLinearInstallInfo(token.access_token);
+  await saveToken(installInfo, token);
 
-  return { viewerAppUserId, scope: token.scope };
+  return { ...installInfo, scope: token.scope };
 }

@@ -8,6 +8,9 @@ export type TokenRecord = {
   expires_at: number;
   scope?: string | string[];
   viewer_app_user_id?: string;
+  organization_id?: string;
+  organization_name?: string;
+  organization_url_key?: string;
 };
 
 export type StateRecord = {

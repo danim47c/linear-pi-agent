@@ -11,6 +11,7 @@ type StoredInstallation = TokenRecord & {
 };
 
 type TokenStore = {
+  default_installation_key?: string;
   default_app_user_id?: string;
   installations: Record<string, StoredInstallation>;
 };
@@ -35,6 +36,10 @@ export type AgentActivityContent =
   | { type: "elicitation"; body: string }
   | { type: "action"; action: string; parameter: string; result?: string };
 
+export type LinearRequestOptions = {
+  installationKey?: string;
+};
+
 function now() {
   return Date.now();
 }
@@ -51,25 +56,28 @@ async function writeTokenStore(store: TokenStore): Promise<void> {
   await writePrivateJsonFile(config.TOKEN_STORE_PATH, store);
 }
 
-async function selectInstallation(): Promise<{ store: TokenStore; appUserId: string; installation: StoredInstallation }> {
+async function selectInstallation(
+  installationKey?: string,
+): Promise<{ store: TokenStore; installationKey: string; installation: StoredInstallation }> {
   const store = await readTokenStore();
-  const appUserId = store.default_app_user_id ?? Object.keys(store.installations)[0];
+  const selectedKey =
+    installationKey ?? store.default_installation_key ?? store.default_app_user_id ?? Object.keys(store.installations)[0];
 
-  if (!appUserId) {
+  if (!selectedKey) {
     throw new Error("Linear is not installed yet. Visit /linear/install first.");
   }
 
-  const installation = store.installations[appUserId];
+  const installation = store.installations[selectedKey];
   if (!installation) {
-    throw new Error("Linear token store is missing the default installation.");
+    throw new Error(`Linear token store is missing installation ${selectedKey}. Install this workspace first.`);
   }
 
-  return { store, appUserId, installation };
+  return { store, installationKey: selectedKey, installation };
 }
 
 async function refreshInstallation(
   store: TokenStore,
-  appUserId: string,
+  installationKey: string,
   installation: StoredInstallation,
 ): Promise<StoredInstallation> {
   if (!installation.refresh_token) {
@@ -105,25 +113,30 @@ async function refreshInstallation(
     updated_at: now(),
   };
 
-  store.installations[appUserId] = refreshed;
-  store.default_app_user_id = appUserId;
+  store.installations[installationKey] = refreshed;
+  store.default_installation_key = store.default_installation_key ?? installationKey;
+  store.default_app_user_id = installation.viewer_app_user_id ?? store.default_app_user_id;
   await writeTokenStore(store);
   return refreshed;
 }
 
-async function getAccessToken(): Promise<string> {
-  const { store, appUserId, installation } = await selectInstallation();
+async function getAccessToken(installationKey?: string): Promise<string> {
+  const selected = await selectInstallation(installationKey);
 
-  if (installation.expires_at - REFRESH_SKEW_MS > now()) {
-    return installation.access_token;
+  if (selected.installation.expires_at - REFRESH_SKEW_MS > now()) {
+    return selected.installation.access_token;
   }
 
-  const refreshed = await refreshInstallation(store, appUserId, installation);
+  const refreshed = await refreshInstallation(selected.store, selected.installationKey, selected.installation);
   return refreshed.access_token;
 }
 
-export async function linearGraphql<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
-  const accessToken = await getAccessToken();
+export async function linearGraphql<T>(
+  query: string,
+  variables?: Record<string, unknown>,
+  options?: LinearRequestOptions,
+): Promise<T> {
+  const accessToken = await getAccessToken(options?.installationKey);
 
   const response = await fetch(LINEAR_GRAPHQL_URL, {
     method: "POST",
@@ -157,7 +170,7 @@ export async function getLinearViewer(): Promise<{ id: string; name?: string }> 
 export async function createAgentActivity(
   agentSessionId: string,
   content: AgentActivityContent,
-  options?: { ephemeral?: boolean },
+  options?: LinearRequestOptions & { ephemeral?: boolean },
 ): Promise<{ id: string }> {
   const data = await linearGraphql<{ agentActivityCreate: { success: boolean; agentActivity: { id: string } } }>(
     `mutation AgentActivityCreate($input: AgentActivityCreateInput!) {
@@ -173,6 +186,7 @@ export async function createAgentActivity(
         ephemeral: options?.ephemeral,
       },
     },
+    { installationKey: options?.installationKey },
   );
 
   if (!data.agentActivityCreate.success) {

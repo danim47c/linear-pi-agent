@@ -8,7 +8,7 @@ import {
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
 import { config } from "./config.js";
-import { createAgentActivity } from "./linear.js";
+import { createAgentActivity, type LinearRequestOptions } from "./linear.js";
 import type { AgentSessionWebhook } from "./session-runner.js";
 
 const MAX_LINEAR_BODY_CHARS = 8_000;
@@ -159,7 +159,10 @@ class ProgressReporter {
   private timer?: NodeJS.Timeout;
   private lastSentAt = 0;
 
-  constructor(private readonly agentSessionId: string) {}
+  constructor(
+    private readonly agentSessionId: string,
+    private readonly options?: LinearRequestOptions,
+  ) {}
 
   thought(body: string): void {
     this.queue({ type: "thought", body: truncate(body) });
@@ -195,9 +198,9 @@ class ProgressReporter {
           type: "action",
           action: update.action ?? "Processing",
           parameter: update.parameter ?? update.body,
-        });
+        }, this.options);
       } else {
-        await createAgentActivity(this.agentSessionId, { type: "thought", body: update.body });
+        await createAgentActivity(this.agentSessionId, { type: "thought", body: update.body }, this.options);
       }
     } catch (error) {
       console.error("failed to post pi progress", { message: error instanceof Error ? error.message : String(error) });
@@ -265,7 +268,7 @@ function handleSdkEvent(event: AgentSessionEvent, reporter: ProgressReporter): v
   }
 }
 
-export async function runPi(payload: AgentSessionWebhook): Promise<PiRunResult> {
+export async function runPi(payload: AgentSessionWebhook, options?: LinearRequestOptions): Promise<PiRunResult> {
   if (config.PI_RUNNER === "cli") {
     throw new Error("CLI pi runner fallback was removed from this build path; set PI_RUNNER=sdk or restore the legacy runner.");
   }
@@ -274,7 +277,7 @@ export async function runPi(payload: AgentSessionWebhook): Promise<PiRunResult> 
   if (!agentSessionId) throw new Error("agentSession.id is required to run pi");
 
   const prompt = payload.action === "prompted" ? buildPiFollowUpPrompt(payload) : buildPiPrompt(payload);
-  const reporter = new ProgressReporter(agentSessionId);
+  const reporter = new ProgressReporter(agentSessionId, options);
   const managed = await getSdkSession(agentSessionId, reporter);
   let finalText = "";
   const captureFinal = managed.session.subscribe((event) => {
