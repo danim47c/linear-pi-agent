@@ -10,6 +10,7 @@ import {
 import { config } from "./config.js";
 import { createAgentActivity, type LinearRequestOptions } from "./linear.js";
 import type { AgentSessionWebhook } from "./session-runner.js";
+import { repositoryTargetSummary, resolveRepositoryTarget, type RepositoryTarget } from "./workspace-config.js";
 
 const MAX_LINEAR_BODY_CHARS = 8_000;
 const MAX_PROGRESS_CHARS = 220;
@@ -33,6 +34,7 @@ type ManagedSession = {
   session: AgentSession;
   unsubscribe: () => void;
   reporterRef: { current: ProgressReporter };
+  workdir: string;
 };
 
 const sdkSessions = new Map<string, ManagedSession>();
@@ -95,14 +97,15 @@ function guidanceText(payload: AgentSessionWebhook): string {
   return `\n\nLinear guidance:\n${rules.map((rule) => `- ${rule}`).join("\n")}`;
 }
 
-export function buildPiPrompt(payload: AgentSessionWebhook): string {
+export function buildPiPrompt(payload: AgentSessionWebhook, target?: RepositoryTarget): string {
   const issue = payload.agentSession?.issue;
   const promptContext = payload.promptContext ?? payload.agentSession?.promptContext;
 
   return [
     "You are running as Pi, a Linear custom agent powered by pi.",
-    "Work directly in this repository with full control. Make code changes when appropriate.",
+    "Work directly in the selected repository with full control. Make code changes when appropriate.",
     "Do not expose secrets. Be concise in your final summary for Linear.",
+    target ? `\nSelected repository context:\n${repositoryTargetSummary(target)}` : undefined,
     "",
     issue ? "Linear issue:" : "Linear session:",
     issue?.identifier ? `- Identifier: ${issue.identifier}` : undefined,
@@ -208,9 +211,12 @@ class ProgressReporter {
   }
 }
 
-async function getSdkSession(agentSessionId: string, reporter: ProgressReporter): Promise<ManagedSession> {
+async function getSdkSession(agentSessionId: string, reporter: ProgressReporter, workdir: string): Promise<ManagedSession> {
   const existing = sdkSessions.get(agentSessionId);
   if (existing) {
+    if (existing.workdir !== workdir) {
+      throw new Error(`Agent session ${agentSessionId} is already bound to ${existing.workdir}, not ${workdir}.`);
+    }
     existing.reporterRef.current = reporter;
     return existing;
   }
@@ -218,14 +224,14 @@ async function getSdkSession(agentSessionId: string, reporter: ProgressReporter)
   const sessionDir = path.resolve(config.PI_SESSION_DIR);
   await mkdir(sessionDir, { recursive: true });
   const sessionFile = path.join(sessionDir, `${agentSessionId}.jsonl`);
-  const sessionManager = SessionManager.open(sessionFile, sessionDir, config.PI_WORKDIR);
-  const { session } = await createAgentSession({ cwd: config.PI_WORKDIR, sessionManager });
+  const sessionManager = SessionManager.open(sessionFile, sessionDir, workdir);
+  const { session } = await createAgentSession({ cwd: workdir, sessionManager });
 
   const reporterRef = { current: reporter };
   const unsubscribe = session.subscribe((event) => handleSdkEvent(event, reporterRef.current));
   await session.bindExtensions({});
 
-  const managed = { session, unsubscribe, reporterRef };
+  const managed = { session, unsubscribe, reporterRef, workdir };
   sdkSessions.set(agentSessionId, managed);
   return managed;
 }
@@ -276,9 +282,18 @@ export async function runPi(payload: AgentSessionWebhook, options?: LinearReques
   const agentSessionId = payload.agentSession?.id;
   if (!agentSessionId) throw new Error("agentSession.id is required to run pi");
 
-  const prompt = payload.action === "prompted" ? buildPiFollowUpPrompt(payload) : buildPiPrompt(payload);
+  const target = await resolveRepositoryTarget(payload);
+  console.log("pi repository target selected", {
+    agentSessionId,
+    workspaceKey: target.workspaceKey,
+    repository: target.repository,
+    workdir: target.workdir,
+    source: target.source,
+  });
+
+  const prompt = payload.action === "prompted" ? buildPiFollowUpPrompt(payload) : buildPiPrompt(payload, target);
   const reporter = new ProgressReporter(agentSessionId, options);
-  const managed = await getSdkSession(agentSessionId, reporter);
+  const managed = await getSdkSession(agentSessionId, reporter, target.workdir);
   let finalText = "";
   const captureFinal = managed.session.subscribe((event) => {
     if (event.type === "agent_end") finalText = finalAssistantText(event.messages) ?? finalText;

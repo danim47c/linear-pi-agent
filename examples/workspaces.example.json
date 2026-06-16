@@ -1,0 +1,30 @@
+{
+  "defaultWorkspaceKey": "default",
+  "workspaces": {
+    "default": {
+      "name": "Default Linear workspace",
+      "defaultRepository": "danim47c/linear-pi-agent",
+      "repositories": {
+        "danim47c/linear-pi-agent": {
+          "repository": "danim47c/linear-pi-agent",
+          "workdir": "/srv/pippo/linear-pi-agent",
+          "defaultBranch": "main",
+          "branchPrefix": "pippo"
+        }
+      }
+    },
+    "lin_org_id_or_url_key": {
+      "name": "Another Linear workspace",
+      "defaultRepository": "danim47c/another-repo",
+      "repositories": {
+        "danim47c/another-repo": {
+          "repository": "danim47c/another-repo",
+          "workdir": "/srv/pippo/repos/danim47c/another-repo",
+          "defaultBranch": "main",
+          "branchPrefix": "pippo",
+          "githubInstallationId": 12345678
+        }
+      }
+    }
+  }
+}

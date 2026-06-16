@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { z } from "zod";
 
+const optionalNonEmptyString = z.preprocess((value) => value === "" ? undefined : value, z.string().min(1).optional());
+
 const ConfigSchema = z.object({
   LINEAR_CLIENT_ID: z.string().min(1),
   LINEAR_CLIENT_SECRET: z.string().min(1),
@@ -19,6 +21,10 @@ const ConfigSchema = z.object({
   PORT: z.coerce.number().int().positive().default(8787),
   TOKEN_STORE_PATH: z.string().default("./data/linear-tokens.json"),
   STATE_STORE_PATH: z.string().default("./data/oauth-states.json"),
+  WORKSPACE_CONFIG_PATH: z.string().default("./data/workspaces.json"),
+  GITHUB_APP_ID: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().int().positive().optional()),
+  GITHUB_APP_PRIVATE_KEY_PATH: optionalNonEmptyString,
+  GITHUB_APP_SLUG: optionalNonEmptyString,
 });
 
 export const config = ConfigSchema.parse(process.env);
@@ -39,5 +45,8 @@ export function publicConfig() {
     port: config.PORT,
     tokenStorePath: config.TOKEN_STORE_PATH,
     stateStorePath: config.STATE_STORE_PATH,
+    workspaceConfigPath: config.WORKSPACE_CONFIG_PATH,
+    githubAppConfigured: Boolean(config.GITHUB_APP_ID && config.GITHUB_APP_PRIVATE_KEY_PATH),
+    githubAppSlug: config.GITHUB_APP_SLUG,
   };
 }

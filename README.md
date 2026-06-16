@@ -13,8 +13,8 @@ If you want the easiest setup path, copy the contents of [`INSTALL.md`](./INSTAL
 ```text
 Linear Agent Session
   -> webhook to this service
-  -> pi SDK session
-  -> target repository at PI_WORKDIR
+  -> workspace/repository mapping
+  -> pi SDK session in the selected repository
   -> progress/results back to Linear
 ```
 
@@ -23,6 +23,7 @@ The service:
 - exposes OAuth install and webhook endpoints for Linear
 - stores Linear OAuth tokens locally per workspace/install
 - selects the correct Linear installation token for webhooks that include `organizationId`
+- maps Linear workspaces to one or more configured repositories
 - keeps a persistent pi SDK session per Linear `agentSession.id`
 - supports follow-up prompts on active sessions
 - handles stop/cancel requests by aborting the pi session
@@ -108,6 +109,11 @@ HOST=127.0.0.1
 PORT=8787
 TOKEN_STORE_PATH=./data/linear-tokens.json
 STATE_STORE_PATH=./data/oauth-states.json
+WORKSPACE_CONFIG_PATH=./data/workspaces.json
+
+GITHUB_APP_ID=
+GITHUB_APP_PRIVATE_KEY_PATH=
+GITHUB_APP_SLUG=
 ```
 
 Important values:
@@ -116,11 +122,44 @@ Important values:
 - `LINEAR_REDIRECT_URI` — must exactly match the OAuth callback URL configured in Linear
 - `LINEAR_WEBHOOK_SECRET` — Linear webhook signing secret
 - `INSTALL_SECRET` — random secret for `/linear/install`; use at least 16 characters
-- `PI_WORKDIR` — the repository pi should work in
+- `PI_WORKDIR` — fallback repository pi should work in when no workspace mapping exists
+- `WORKSPACE_CONFIG_PATH` — optional Linear workspace -> repository mapping file
 - `PI_SESSION_DIR` — persisted pi SDK session state
 - `TOKEN_STORE_PATH` / `STATE_STORE_PATH` — persisted Linear OAuth state
+- `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_PATH` — optional GitHub App credentials for installation/token smoke checks and future Git automation
 
-Use absolute paths for token, state, and session storage in production.
+Use absolute paths for token, state, session, and workspace config storage in production.
+
+## Workspace/repository mapping
+
+By default, the service falls back to `PI_WORKDIR`. To route each Linear workspace to one or more repositories, create `WORKSPACE_CONFIG_PATH` using [`examples/workspaces.example.json`](./examples/workspaces.example.json) as a template.
+
+Keys in `workspaces` can be Linear `organizationId`, Linear workspace `urlKey`, or a `defaultWorkspaceKey` fallback. If a workspace has several repositories, set `defaultRepository`; users can select another configured repository in Linear with text like:
+
+```text
+repo: owner/repo
+```
+
+Repository workdirs are local directories that the `pippo` user can access. This keeps repository access explicit and avoids letting arbitrary Linear prompts choose arbitrary paths.
+
+## GitHub App setup
+
+For least-privilege GitHub access, create a GitHub App and install it only on the repositories Pippo may touch.
+
+Recommended permissions:
+
+- Repository metadata: read-only
+- Contents: read/write
+- Pull requests: read/write
+
+No GitHub webhook is required for the current smoke-check/token flow. Store the private key outside git, for example `/srv/pippo/secrets/github-app.private-key.pem` with mode `600`, then set `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`, and `GITHUB_APP_SLUG`.
+
+Verify with:
+
+```bash
+npm run smoke:github
+GITHUB_SMOKE_REPOSITORY=owner/repo npm run smoke:github
+```
 
 ## Build and check
 
@@ -141,6 +180,7 @@ Smoke tests require configured secrets and/or a running service:
 ```bash
 npm run smoke:webhook
 npm run smoke:linear
+npm run smoke:github
 ```
 
 If a reverse proxy listens on another port, point the webhook smoke test at it:
@@ -211,7 +251,7 @@ Public endpoint expectations:
 
 ## Operational notes
 
-Linear OAuth tokens are stored by workspace/organization when Linear exposes `organizationId` or `viewer.organization.id`; older single-install token stores still work through the default install fallback. Active run and queue state is currently in memory. A Node/systemd restart can lose an active run or queued follow-up prompt, although OAuth tokens and pi session history are persisted on disk.
+Linear OAuth tokens are stored by workspace/organization when Linear exposes `organizationId` or `viewer.organization.id`; older single-install token stores still work through the default install fallback. Workspace/repository mappings are read from disk for each new run, so repository routing changes usually do not require a restart. Active run and queue state is currently in memory. A Node/systemd restart can lose an active run or queued follow-up prompt, although OAuth tokens and pi session history are persisted on disk.
 
 ## Roadmap
 
