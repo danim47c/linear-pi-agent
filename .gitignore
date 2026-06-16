@@ -3,4 +3,5 @@ dist/
 .env
 data/*.json
 data/pi-sessions/
+data/repos/
 *.log

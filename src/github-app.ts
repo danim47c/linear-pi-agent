@@ -20,7 +20,18 @@ export type GitHubAppInfo = {
 export type GitHubInstallation = {
   id: number;
   account?: { login?: string; type?: string };
+  target_type?: string;
   repository_selection?: string;
+};
+
+export type GitHubRepository = {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  clone_url: string;
+  html_url: string;
 };
 
 export type GitHubInstallationToken = {
@@ -95,6 +106,10 @@ export async function listGitHubInstallations(): Promise<GitHubInstallation[]> {
   return githubAppRequest<GitHubInstallation[]>("/app/installations");
 }
 
+export async function getGitHubInstallation(installationId: number): Promise<GitHubInstallation> {
+  return githubAppRequest<GitHubInstallation>(`/app/installations/${installationId}`);
+}
+
 export async function getRepositoryInstallation(repository: string): Promise<GitHubInstallation> {
   const [owner, repo] = repository.split("/");
   if (!owner || !repo) throw new Error(`Invalid GitHub repository: ${repository}`);
@@ -113,4 +128,28 @@ export async function createInstallationAccessToken(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+export async function githubInstallationRequest<T>(
+  installationId: number,
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const token = await createInstallationAccessToken(installationId);
+  return githubRequest<T>(path, { ...options, token: token.token });
+}
+
+export async function listInstallationRepositories(installationId: number): Promise<GitHubRepository[]> {
+  const repositories: GitHubRepository[] = [];
+  let page = 1;
+
+  while (true) {
+    const response = await githubInstallationRequest<{ repositories: GitHubRepository[] }>(
+      installationId,
+      `/installation/repositories?per_page=100&page=${page}`,
+    );
+    repositories.push(...response.repositories);
+    if (response.repositories.length < 100) return repositories;
+    page += 1;
+  }
 }

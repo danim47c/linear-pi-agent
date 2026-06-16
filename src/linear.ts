@@ -167,6 +167,23 @@ export async function getLinearViewer(): Promise<{ id: string; name?: string }> 
   return data.viewer;
 }
 
+export async function listLinearInstallations(): Promise<Array<{
+  key: string;
+  viewerAppUserId?: string;
+  organizationId?: string;
+  organizationName?: string;
+  organizationUrlKey?: string;
+}>> {
+  const store = await readTokenStore();
+  return Object.entries(store.installations).map(([key, installation]) => ({
+    key,
+    viewerAppUserId: installation.viewer_app_user_id,
+    organizationId: installation.organization_id,
+    organizationName: installation.organization_name,
+    organizationUrlKey: installation.organization_url_key,
+  }));
+}
+
 export async function createAgentActivity(
   agentSessionId: string,
   content: AgentActivityContent,

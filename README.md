@@ -109,11 +109,15 @@ HOST=127.0.0.1
 PORT=8787
 TOKEN_STORE_PATH=./data/linear-tokens.json
 STATE_STORE_PATH=./data/oauth-states.json
-WORKSPACE_CONFIG_PATH=./data/workspaces.json
+REPOSITORY_BASE_DIR=./data/repos
+GITHUB_INSTALLATION_STORE_PATH=./data/github-installations.json
 
 GITHUB_APP_ID=
 GITHUB_APP_PRIVATE_KEY_PATH=
 GITHUB_APP_SLUG=
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+GITHUB_REDIRECT_URI=https://your-domain.example/github/oauth/callback
 ```
 
 Important values:
@@ -122,37 +126,56 @@ Important values:
 - `LINEAR_REDIRECT_URI` — must exactly match the OAuth callback URL configured in Linear
 - `LINEAR_WEBHOOK_SECRET` — Linear webhook signing secret
 - `INSTALL_SECRET` — random secret for `/linear/install`; use at least 16 characters
-- `PI_WORKDIR` — fallback repository pi should work in when no workspace mapping exists
-- `WORKSPACE_CONFIG_PATH` — optional Linear workspace -> repository mapping file
+- `PI_WORKDIR` — fallback repository pi should work in when no GitHub App repository is installed yet
+- `REPOSITORY_BASE_DIR` — where Pippo clones GitHub App repositories locally
 - `PI_SESSION_DIR` — persisted pi SDK session state
 - `TOKEN_STORE_PATH` / `STATE_STORE_PATH` — persisted Linear OAuth state
-- `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_PATH` — optional GitHub App credentials for installation/token smoke checks and future Git automation
+- `GITHUB_INSTALLATION_STORE_PATH` — persisted GitHub App installs, repositories, and workspace defaults
+- `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_PATH` / `GITHUB_APP_SLUG` — GitHub App server-to-server credentials
+- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_REDIRECT_URI` — optional GitHub OAuth callback support; repository access still uses installation tokens
 
-Use absolute paths for token, state, session, and workspace config storage in production.
+Use absolute paths for token, state, session, repository, and install storage in production.
 
-## Workspace/repository mapping
-
-By default, the service falls back to `PI_WORKDIR`. To route each Linear workspace to one or more repositories, create `WORKSPACE_CONFIG_PATH` using [`examples/workspaces.example.json`](./examples/workspaces.example.json) as a template.
-
-Keys in `workspaces` can be Linear `organizationId`, Linear workspace `urlKey`, or a `defaultWorkspaceKey` fallback. If a workspace has several repositories, set `defaultRepository`; users can select another configured repository in Linear with text like:
-
-```text
-repo: owner/repo
-```
-
-Repository workdirs are local directories that the `pippo` user can access. This keeps repository access explicit and avoids letting arbitrary Linear prompts choose arbitrary paths.
-
-## GitHub App setup
+## GitHub App setup and repository routing
 
 For least-privilege GitHub access, create a GitHub App and install it only on the repositories Pippo may touch.
 
-Recommended permissions:
+Recommended settings:
 
-- Repository metadata: read-only
+| GitHub App setting | Value |
+| --- | --- |
+| Homepage URL | `https://your-domain.example` |
+| Callback URL | `https://your-domain.example/github/oauth/callback` |
+| Setup URL | `https://your-domain.example/github/setup/callback` |
+| Webhook | disabled for now |
+
+Recommended repository permissions:
+
+- Metadata: read-only
 - Contents: read/write
 - Pull requests: read/write
 
-No GitHub webhook is required for the current smoke-check/token flow. Store the private key outside git, for example `/srv/pippo/secrets/github-app.private-key.pem` with mode `600`, then set `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`, and `GITHUB_APP_SLUG`.
+Store the private key outside git, for example `/srv/pippo/secrets/github-app.private-key.pem` with mode `600`, then set `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_APP_SLUG`, and optionally the OAuth client ID/secret.
+
+Install the GitHub App through Pippo instead of editing local config:
+
+```text
+https://your-domain.example/github/install?install_secret=YOUR_INSTALL_SECRET
+```
+
+Pippo saves the installation and allowed repositories automatically. Repository selection is simple:
+
+- if exactly one GitHub repo is installed, Pippo uses it automatically
+- if several repos are installed, say `repo: owner/repo` in Linear, or set a default with `/github/link`
+- local clones are created under `REPOSITORY_BASE_DIR`
+
+Useful admin endpoints, all protected by `INSTALL_SECRET`:
+
+```text
+/github/status?install_secret=YOUR_INSTALL_SECRET
+/github/link?install_secret=YOUR_INSTALL_SECRET&workspace=LINEAR_ORG_ID_OR_URL_KEY&repo=owner/repo
+/github/oauth/start?install_secret=YOUR_INSTALL_SECRET
+```
 
 Verify with:
 
@@ -248,10 +271,14 @@ Public endpoint expectations:
 | `/linear/install` | `INSTALL_SECRET` | Use only during install; rate-limit this route. |
 | `/linear/oauth/callback` | OAuth `state` | Must stay public for Linear OAuth callback. |
 | `/linear/webhook` | Linear HMAC signature + timestamp | Must stay public for Linear; rate-limit invalid/noisy traffic at the proxy. |
+| `/github/install` | `INSTALL_SECRET` | Starts GitHub App install flow. |
+| `/github/setup/callback` | GitHub App installation ID + optional state | Must be configured as the GitHub App setup URL. |
+| `/github/oauth/callback` | OAuth `state` when OAuth is started from Pippo | Optional GitHub user OAuth callback; access token is not persisted. |
+| `/github/status` / `/github/link` | `INSTALL_SECRET` | Admin-only repository routing helpers. |
 
 ## Operational notes
 
-Linear OAuth tokens are stored by workspace/organization when Linear exposes `organizationId` or `viewer.organization.id`; older single-install token stores still work through the default install fallback. Workspace/repository mappings are read from disk for each new run, so repository routing changes usually do not require a restart. Active run and queue state is currently in memory. A Node/systemd restart can lose an active run or queued follow-up prompt, although OAuth tokens and pi session history are persisted on disk.
+Linear OAuth tokens are stored by workspace/organization when Linear exposes `organizationId` or `viewer.organization.id`; older single-install token stores still work through the default install fallback. GitHub App installations and workspace defaults are managed through Pippo endpoints and persisted locally. Active run and queue state is currently in memory. A Node/systemd restart can lose an active run or queued follow-up prompt, although OAuth tokens, GitHub installation state, and pi session history are persisted on disk.
 
 ## Roadmap
 

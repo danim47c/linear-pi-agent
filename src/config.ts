@@ -22,9 +22,14 @@ const ConfigSchema = z.object({
   TOKEN_STORE_PATH: z.string().default("./data/linear-tokens.json"),
   STATE_STORE_PATH: z.string().default("./data/oauth-states.json"),
   WORKSPACE_CONFIG_PATH: z.string().default("./data/workspaces.json"),
+  REPOSITORY_BASE_DIR: z.string().default("./data/repos"),
+  GITHUB_INSTALLATION_STORE_PATH: z.string().default("./data/github-installations.json"),
   GITHUB_APP_ID: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().int().positive().optional()),
   GITHUB_APP_PRIVATE_KEY_PATH: optionalNonEmptyString,
   GITHUB_APP_SLUG: optionalNonEmptyString,
+  GITHUB_CLIENT_ID: optionalNonEmptyString,
+  GITHUB_CLIENT_SECRET: optionalNonEmptyString,
+  GITHUB_REDIRECT_URI: optionalNonEmptyString,
 });
 
 export const config = ConfigSchema.parse(process.env);
@@ -46,7 +51,10 @@ export function publicConfig() {
     tokenStorePath: config.TOKEN_STORE_PATH,
     stateStorePath: config.STATE_STORE_PATH,
     workspaceConfigPath: config.WORKSPACE_CONFIG_PATH,
+    repositoryBaseDir: config.REPOSITORY_BASE_DIR,
+    githubInstallationStorePath: config.GITHUB_INSTALLATION_STORE_PATH,
     githubAppConfigured: Boolean(config.GITHUB_APP_ID && config.GITHUB_APP_PRIVATE_KEY_PATH),
+    githubOAuthConfigured: Boolean(config.GITHUB_CLIENT_ID && config.GITHUB_CLIENT_SECRET && config.GITHUB_REDIRECT_URI),
     githubAppSlug: config.GITHUB_APP_SLUG,
   };
 }

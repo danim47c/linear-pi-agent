@@ -1,44 +1,24 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { z } from "zod";
 import { config } from "./config.js";
-import { readJsonFile } from "./storage.js";
 import type { AgentSessionWebhook } from "./session-runner.js";
-
-const RepositoryConfigSchema = z.object({
-  repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).optional(),
-  workdir: z.string().min(1),
-  defaultBranch: z.string().min(1).default("main"),
-  branchPrefix: z.string().min(1).default("pippo"),
-  githubInstallationId: z.number().int().positive().optional(),
-});
-
-const WorkspaceConfigSchema = z.object({
-  name: z.string().optional(),
-  defaultRepository: z.string().optional(),
-  repositories: z.record(RepositoryConfigSchema).default({}),
-});
-
-const WorkspaceConfigStoreSchema = z.object({
-  defaultWorkspaceKey: z.string().optional(),
-  workspaces: z.record(WorkspaceConfigSchema).default({}),
-});
+import {
+  ensureLocalRepository,
+  normalizeRepository,
+  selectInstalledRepository,
+} from "./github-installations.js";
 
 export type RepositoryTarget = {
   workspaceKey?: string;
-  workspaceName?: string;
   repositoryKey?: string;
   repository?: string;
+  repositoryUrl?: string;
   workdir: string;
   defaultBranch: string;
   branchPrefix: string;
   githubInstallationId?: number;
-  source: "workspace-config" | "fallback";
+  source: "github-app" | "fallback";
 };
-
-type WorkspaceConfigStore = z.infer<typeof WorkspaceConfigStoreSchema>;
-type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>;
-type RepositoryConfig = z.infer<typeof RepositoryConfigSchema>;
 
 function fallbackTarget(): RepositoryTarget {
   return {
@@ -49,24 +29,12 @@ function fallbackTarget(): RepositoryTarget {
   };
 }
 
-async function readWorkspaceConfig(): Promise<WorkspaceConfigStore> {
-  const raw = await readJsonFile<unknown>(config.WORKSPACE_CONFIG_PATH, { workspaces: {} });
-  return WorkspaceConfigStoreSchema.parse(raw);
-}
-
-function normalizeRepository(value: string): string {
-  return value.trim().replace(/^https:\/\/github\.com\//i, "").replace(/\.git$/i, "").toLowerCase();
-}
-
-function workspaceCandidates(payload: AgentSessionWebhook, store: WorkspaceConfigStore): string[] {
-  return [
-    payload.organizationId,
-    payload.organization?.id,
-    payload.organization?.urlKey,
-    payload.agentSession?.organization?.id,
-    payload.agentSession?.organization?.urlKey,
-    store.defaultWorkspaceKey,
-  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
+export function workspaceKeyFromWebhook(payload: AgentSessionWebhook): string | undefined {
+  return payload.organizationId ??
+    payload.organization?.id ??
+    payload.organization?.urlKey ??
+    payload.agentSession?.organization?.id ??
+    payload.agentSession?.organization?.urlKey;
 }
 
 function payloadText(payload: AgentSessionWebhook): string {
@@ -91,97 +59,42 @@ export function repositoryHintFromPayload(payload: AgentSessionWebhook): string 
   return undefined;
 }
 
-function selectWorkspace(store: WorkspaceConfigStore, candidates: string[]): [string, WorkspaceConfig] | undefined {
-  for (const candidate of candidates) {
-    const workspace = store.workspaces[candidate];
-    if (workspace) return [candidate, workspace];
-  }
-
-  const entries = Object.entries(store.workspaces);
-  if (entries.length === 1) return entries[0];
-  return undefined;
-}
-
-function selectRepository(
-  workspace: WorkspaceConfig,
-  hint: string | undefined,
-): [string, RepositoryConfig] | undefined {
-  const repositories = Object.entries(workspace.repositories);
-  if (!repositories.length) return undefined;
-
-  if (hint) {
-    const direct = workspace.repositories[hint];
-    if (direct) return [hint, direct];
-
-    const matching = repositories.find(([key, repo]) =>
-      normalizeRepository(key) === hint || (repo.repository && normalizeRepository(repo.repository) === hint),
-    );
-    if (matching) return matching;
-
-    throw new Error(`Repository ${hint} is not configured for this Linear workspace.`);
-  }
-
-  if (workspace.defaultRepository) {
-    const direct = workspace.repositories[workspace.defaultRepository];
-    if (direct) return [workspace.defaultRepository, direct];
-
-    const normalizedDefault = normalizeRepository(workspace.defaultRepository);
-    const matching = repositories.find(([key, repo]) =>
-      normalizeRepository(key) === normalizedDefault ||
-      (repo.repository && normalizeRepository(repo.repository) === normalizedDefault),
-    );
-    if (matching) return matching;
-
-    throw new Error(`Default repository ${workspace.defaultRepository} is not configured for this Linear workspace.`);
-  }
-
-  return repositories[0];
-}
-
 async function assertWorkdirExists(workdir: string): Promise<void> {
-  try {
-    const stat = await fs.stat(workdir);
-    if (!stat.isDirectory()) throw new Error(`${workdir} is not a directory`);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error(`Configured repository workdir does not exist: ${workdir}`);
-    }
-    throw error;
-  }
+  const stat = await fs.stat(workdir);
+  if (!stat.isDirectory()) throw new Error(`${workdir} is not a directory`);
 }
 
 export async function resolveRepositoryTarget(payload: AgentSessionWebhook): Promise<RepositoryTarget> {
-  const store = await readWorkspaceConfig();
-  const candidates = workspaceCandidates(payload, store);
-  const selectedWorkspace = selectWorkspace(store, candidates);
+  const workspaceKey = workspaceKeyFromWebhook(payload);
+  const repositoryHint = repositoryHintFromPayload(payload);
+  const installedRepository = await selectInstalledRepository({ workspaceKey, repositoryHint });
 
-  if (!selectedWorkspace) return fallbackTarget();
+  if (!installedRepository) {
+    const fallback = fallbackTarget();
+    await assertWorkdirExists(fallback.workdir);
+    return fallback;
+  }
 
-  const [workspaceKey, workspace] = selectedWorkspace;
-  const selectedRepository = selectRepository(workspace, repositoryHintFromPayload(payload));
-  if (!selectedRepository) return fallbackTarget();
-
-  const [repositoryKey, repository] = selectedRepository;
-  const workdir = path.resolve(repository.workdir);
-  await assertWorkdirExists(workdir);
-
+  const workdir = await ensureLocalRepository(installedRepository);
   return {
     workspaceKey,
-    workspaceName: workspace.name,
-    repositoryKey,
-    repository: repository.repository ?? repositoryKey,
+    repositoryKey: normalizeRepository(installedRepository.fullName),
+    repository: installedRepository.fullName,
+    repositoryUrl: installedRepository.htmlUrl,
     workdir,
-    defaultBranch: repository.defaultBranch,
-    branchPrefix: repository.branchPrefix,
-    githubInstallationId: repository.githubInstallationId,
-    source: "workspace-config",
+    defaultBranch: installedRepository.defaultBranch,
+    branchPrefix: "pippo",
+    githubInstallationId: installedRepository.installationId,
+    source: "github-app",
   };
 }
 
 export function repositoryTargetSummary(target: RepositoryTarget): string {
   return [
     target.repository ? `Repository: ${target.repository}` : undefined,
-    target.workspaceName ? `Workspace: ${target.workspaceName}` : target.workspaceKey ? `Workspace key: ${target.workspaceKey}` : undefined,
+    target.repositoryUrl ? `Repository URL: ${target.repositoryUrl}` : undefined,
+    target.workspaceKey ? `Workspace key: ${target.workspaceKey}` : undefined,
     `Workdir: ${target.workdir}`,
+    `Source: ${target.source}`,
   ].filter(Boolean).join("\n");
 }

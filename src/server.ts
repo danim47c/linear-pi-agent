@@ -1,6 +1,15 @@
 import crypto from "node:crypto";
 import express, { type Request, type Response } from "express";
 import { config, publicConfig } from "./config.js";
+import {
+  completeGitHubOAuthCallback,
+  completeGitHubSetupCallback,
+  createGitHubInstallUrl,
+  createGitHubOAuthUrl,
+  linkWorkspaceRepository,
+  listGitHubInstallState,
+} from "./github-installations.js";
+import { listLinearInstallations } from "./linear.js";
 import { completeOAuthInstall, consumeOAuthState, createInstallUrl } from "./oauth.js";
 import { handleAgentSessionWebhook } from "./session-runner.js";
 import { isFreshWebhookTimestamp, verifyLinearSignature } from "./signature.js";
@@ -68,6 +77,42 @@ function isInstallAuthorized(req: Request): boolean {
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 
+function requireInstallAuthorized(req: Request, res: Response): boolean {
+  if (isInstallAuthorized(req)) return true;
+  res.status(401).type("text/plain").send("Missing or invalid install secret.\n");
+  return false;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function requiredNumber(value: unknown, label: string): number {
+  const text = optionalString(value);
+  const parsed = text ? Number(text) : NaN;
+  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${label} must be a positive integer.`);
+  return parsed;
+}
+
+async function inferWorkspaceKey(candidate?: string): Promise<string> {
+  if (candidate) return candidate;
+
+  const installs = await listLinearInstallations();
+  if (installs.length === 1) {
+    return installs[0].organizationId ?? installs[0].organizationUrlKey ?? installs[0].key;
+  }
+
+  throw new Error("Specify workspace=<linear organization id/urlKey>; it could not be inferred.");
+}
+
+async function inferRepository(candidate?: string): Promise<string> {
+  if (candidate) return candidate;
+
+  const state = await listGitHubInstallState();
+  if (state.repositories.length === 1) return state.repositories[0].fullName;
+  throw new Error("Specify repo=owner/repo; it could not be inferred.");
+}
+
 export function createApp() {
   const app = express();
 
@@ -122,6 +167,111 @@ export function createApp() {
           "",
         ].join("\n"),
       );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/github/status", async (req: Request, res: Response, next: express.NextFunction) => {
+    try {
+      if (!requireInstallAuthorized(req, res)) return;
+      const [linear, github] = await Promise.all([listLinearInstallations(), listGitHubInstallState()]);
+      res.json({ ok: true, linearInstallations: linear, github });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/github/install", async (req: Request, res: Response, next: express.NextFunction) => {
+    try {
+      if (!requireInstallAuthorized(req, res)) return;
+      const installUrl = await createGitHubInstallUrl({
+        workspaceKey: optionalString(req.query.workspace),
+        defaultRepository: optionalString(req.query.repo),
+      });
+      res.redirect(302, installUrl);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/github/setup/callback", async (req: Request, res: Response, next: express.NextFunction) => {
+    try {
+      const installation = await completeGitHubSetupCallback({
+        installationId: requiredNumber(req.query.installation_id, "installation_id"),
+        state: optionalString(req.query.state),
+        setupAction: optionalString(req.query.setup_action),
+      });
+
+      console.log("github app installation updated", {
+        installationId: installation.installation.id,
+        account: installation.installation.accountLogin,
+        repositoryCount: installation.installation.repositories.length,
+        linkedWorkspace: installation.linked?.workspaceKey,
+      });
+
+      return res.type("text/plain").send(
+        [
+          "Pippo GitHub App installation saved.",
+          `Account: ${installation.installation.accountLogin ?? "unknown"}`,
+          `Installation ID: ${installation.installation.id}`,
+          `Repositories: ${installation.installation.repositories.length}`,
+          installation.linked ? `Linked workspace: ${installation.linked.workspaceKey} -> ${installation.linked.defaultRepository}` : undefined,
+          "",
+          "You can close this tab.",
+          "",
+        ].filter(Boolean).join("\n"),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/github/oauth/start", async (req: Request, res: Response, next: express.NextFunction) => {
+    try {
+      if (!requireInstallAuthorized(req, res)) return;
+      const oauthUrl = await createGitHubOAuthUrl({
+        workspaceKey: optionalString(req.query.workspace),
+        defaultRepository: optionalString(req.query.repo),
+      });
+      res.redirect(302, oauthUrl);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/github/oauth/callback", async (req: Request, res: Response, next: express.NextFunction) => {
+    try {
+      if (typeof req.query.error === "string") {
+        return res.status(400).send(`GitHub OAuth error: ${req.query.error}\n`);
+      }
+
+      const code = optionalString(req.query.code);
+      if (!code) return res.status(400).send("Missing GitHub OAuth code.\n");
+
+      const user = await completeGitHubOAuthCallback({ code, state: optionalString(req.query.state) });
+      console.log("github oauth user authorized", { login: user.login, id: user.id });
+      return res.type("text/plain").send(
+        [
+          "GitHub user authorization saved.",
+          `GitHub user: ${user.login}`,
+          "Pippo does not persist the OAuth access token; repository access uses GitHub App installation tokens.",
+          "You can close this tab.",
+          "",
+        ].join("\n"),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.all("/github/link", async (req: Request, res: Response, next: express.NextFunction) => {
+    try {
+      if (!requireInstallAuthorized(req, res)) return;
+      const workspaceKey = await inferWorkspaceKey(optionalString(req.query.workspace) ?? optionalString(req.body?.workspace));
+      const repository = await inferRepository(optionalString(req.query.repo) ?? optionalString(req.body?.repo));
+      const link = await linkWorkspaceRepository(workspaceKey, repository);
+      res.json({ ok: true, link });
     } catch (error) {
       next(error);
     }
