@@ -40,6 +40,20 @@ export type LinearRequestOptions = {
   installationKey?: string;
 };
 
+export type LinearInstallationSummary = {
+  key: string;
+  viewerAppUserId?: string;
+  organizationId?: string;
+  organizationName?: string;
+  organizationUrlKey?: string;
+};
+
+export type LinearTeamSummary = {
+  id: string;
+  key: string;
+  name: string;
+};
+
 function now() {
   return Date.now();
 }
@@ -167,13 +181,7 @@ export async function getLinearViewer(): Promise<{ id: string; name?: string }> 
   return data.viewer;
 }
 
-export async function listLinearInstallations(): Promise<Array<{
-  key: string;
-  viewerAppUserId?: string;
-  organizationId?: string;
-  organizationName?: string;
-  organizationUrlKey?: string;
-}>> {
+export async function listLinearInstallations(): Promise<LinearInstallationSummary[]> {
   const store = await readTokenStore();
   return Object.entries(store.installations).map(([key, installation]) => ({
     key,
@@ -182,6 +190,17 @@ export async function listLinearInstallations(): Promise<Array<{
     organizationName: installation.organization_name,
     organizationUrlKey: installation.organization_url_key,
   }));
+}
+
+export async function listLinearTeams(installationKey: string): Promise<LinearTeamSummary[]> {
+  const data = await linearGraphql<{ teams: { nodes: LinearTeamSummary[] } }>(
+    `query Teams {
+      teams(first: 100) { nodes { id key name } }
+    }`,
+    undefined,
+    { installationKey },
+  );
+  return data.teams.nodes;
 }
 
 export async function createAgentActivity(

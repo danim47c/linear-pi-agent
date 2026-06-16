@@ -46,13 +46,16 @@ export type InstalledGitHubRepository = {
   htmlUrl: string;
 };
 
-export type WorkspaceRepositoryLink = {
+export type RepositoryLink = {
   workspaceKey: string;
+  teamKey?: string;
   defaultRepository: string;
   githubInstallationId: number;
   createdAt: number;
   updatedAt: number;
 };
+
+export type WorkspaceRepositoryLink = RepositoryLink;
 
 type OAuthUserRecord = {
   login: string;
@@ -63,7 +66,8 @@ type OAuthUserRecord = {
 type GitHubInstallationStore = {
   states: GitHubState[];
   installations: Record<string, GitHubInstallationRecord>;
-  workspaceLinks: Record<string, WorkspaceRepositoryLink>;
+  workspaceLinks: Record<string, RepositoryLink>;
+  teamLinks: Record<string, RepositoryLink>;
   oauthUsers: Record<string, OAuthUserRecord>;
 };
 
@@ -72,7 +76,7 @@ function now() {
 }
 
 function fallbackStore(): GitHubInstallationStore {
-  return { states: [], installations: {}, workspaceLinks: {}, oauthUsers: {} };
+  return { states: [], installations: {}, workspaceLinks: {}, teamLinks: {}, oauthUsers: {} };
 }
 
 async function readStore(): Promise<GitHubInstallationStore> {
@@ -82,6 +86,7 @@ async function readStore(): Promise<GitHubInstallationStore> {
     states: (store.states ?? []).filter((state) => state.expires_at > current),
     installations: store.installations ?? {},
     workspaceLinks: store.workspaceLinks ?? {},
+    teamLinks: store.teamLinks ?? {},
     oauthUsers: store.oauthUsers ?? {},
   };
 }
@@ -259,7 +264,8 @@ export async function completeGitHubOAuthCallback(params: {
 export async function listGitHubInstallState(): Promise<{
   installations: GitHubInstallationRecord[];
   repositories: InstalledGitHubRepository[];
-  workspaceLinks: WorkspaceRepositoryLink[];
+  workspaceLinks: RepositoryLink[];
+  teamLinks: RepositoryLink[];
   oauthUsers: OAuthUserRecord[];
 }> {
   const store = await readStore();
@@ -268,6 +274,7 @@ export async function listGitHubInstallState(): Promise<{
     installations,
     repositories: installations.flatMap((installation) => installation.repositories),
     workspaceLinks: Object.values(store.workspaceLinks),
+    teamLinks: Object.values(store.teamLinks),
     oauthUsers: Object.values(store.oauthUsers),
   };
 }
@@ -278,33 +285,46 @@ export async function findInstalledRepository(repository: string): Promise<Insta
   return state.repositories.find((candidate) => normalizeRepository(candidate.fullName) === normalized);
 }
 
+function teamLinkKey(workspaceKey: string, teamKey: string): string {
+  return `${workspaceKey}:${teamKey}`;
+}
+
 export async function linkWorkspaceRepository(
   workspaceKey: string,
   repository: string,
-): Promise<WorkspaceRepositoryLink> {
+  teamKey?: string,
+): Promise<RepositoryLink> {
   const installedRepository = await findInstalledRepository(repository);
   if (!installedRepository) {
     throw new Error(`GitHub repository ${repository} is not installed for this GitHub App.`);
   }
 
   const store = await readStore();
-  const existing = store.workspaceLinks[workspaceKey];
+  const key = teamKey ? teamLinkKey(workspaceKey, teamKey) : workspaceKey;
+  const existing = teamKey ? store.teamLinks[key] : store.workspaceLinks[key];
   const current = now();
-  const link: WorkspaceRepositoryLink = {
+  const link: RepositoryLink = {
     workspaceKey,
+    teamKey,
     defaultRepository: installedRepository.fullName,
     githubInstallationId: installedRepository.installationId,
     createdAt: existing?.createdAt ?? current,
     updatedAt: current,
   };
 
-  store.workspaceLinks[workspaceKey] = link;
+  if (teamKey) {
+    store.teamLinks[key] = link;
+  } else {
+    store.workspaceLinks[key] = link;
+  }
+
   await writeStore(store);
   return link;
 }
 
 export async function selectInstalledRepository(options: {
   workspaceKey?: string;
+  teamKey?: string;
   repositoryHint?: string;
 }): Promise<InstalledGitHubRepository | undefined> {
   const state = await listGitHubInstallState();
@@ -317,6 +337,13 @@ export async function selectInstalledRepository(options: {
     return match;
   }
 
+  if (options.workspaceKey && options.teamKey) {
+    const linked = state.teamLinks.find((link) =>
+      link.workspaceKey === options.workspaceKey && link.teamKey === options.teamKey,
+    );
+    if (linked) return findInstalledRepository(linked.defaultRepository);
+  }
+
   if (options.workspaceKey) {
     const linked = state.workspaceLinks.find((link) => link.workspaceKey === options.workspaceKey);
     if (linked) return findInstalledRepository(linked.defaultRepository);
@@ -326,7 +353,7 @@ export async function selectInstalledRepository(options: {
   if (state.repositories.length === 0) return undefined;
 
   throw new Error(
-    `Multiple GitHub repositories are installed. Say "repo: owner/repo" in Linear or open /github/link to set a default.`,
+    `Multiple GitHub repositories are installed. Say "repo: owner/repo" in Linear or open /admin to set a default.`,
   );
 }
 

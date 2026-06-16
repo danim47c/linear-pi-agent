@@ -157,7 +157,15 @@ Recommended repository permissions:
 
 Store the private key outside git, for example `/srv/pippo/secrets/github-app.private-key.pem` with mode `600`, then set `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_APP_SLUG`, and optionally the OAuth client ID/secret.
 
-Install the GitHub App through Pippo instead of editing local config:
+Open the admin UI instead of editing local config:
+
+```text
+https://your-domain.example/admin
+```
+
+Log in with `INSTALL_SECRET`. From there you can install the Linear app, install/update the GitHub App, view installed workspaces/teams/repositories, and set default repository links per Linear workspace or team.
+
+You can also install the GitHub App directly through Pippo:
 
 ```text
 https://your-domain.example/github/install?install_secret=YOUR_INSTALL_SECRET
@@ -166,14 +174,16 @@ https://your-domain.example/github/install?install_secret=YOUR_INSTALL_SECRET
 Pippo saves the installation and allowed repositories automatically. Repository selection is simple:
 
 - if exactly one GitHub repo is installed, Pippo uses it automatically
-- if several repos are installed, say `repo: owner/repo` in Linear, or set a default with `/github/link`
+- if several repos are installed, say `repo: owner/repo` in Linear, or set a default from `/admin`
+- team-level defaults override workspace-level defaults
 - local clones are created under `REPOSITORY_BASE_DIR`
 
-Useful admin endpoints, all protected by `INSTALL_SECRET`:
+Useful admin endpoints, all protected by `INSTALL_SECRET` or the admin cookie:
 
 ```text
+/admin
 /github/status?install_secret=YOUR_INSTALL_SECRET
-/github/link?install_secret=YOUR_INSTALL_SECRET&workspace=LINEAR_ORG_ID_OR_URL_KEY&repo=owner/repo
+/github/link?install_secret=YOUR_INSTALL_SECRET&workspace=LINEAR_ORG_ID_OR_URL_KEY&team=LINEAR_TEAM_ID&repo=owner/repo
 /github/oauth/start?install_secret=YOUR_INSTALL_SECRET
 ```
 

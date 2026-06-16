@@ -15,6 +15,11 @@ export type AgentSessionWebhook = {
     id?: string;
     urlKey?: string;
   };
+  team?: {
+    id?: string;
+    key?: string;
+    name?: string;
+  };
   agentActivity?: {
     content?: {
       body?: string;
@@ -28,11 +33,21 @@ export type AgentSessionWebhook = {
       id?: string;
       urlKey?: string;
     };
+    team?: {
+      id?: string;
+      key?: string;
+      name?: string;
+    };
     issue?: {
       identifier?: string;
       title?: string;
       url?: string;
       description?: string | null;
+      team?: {
+        id?: string;
+        key?: string;
+        name?: string;
+      } | null;
     } | null;
   };
   promptContext?: string;

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import express, { type Request, type Response } from "express";
+import { renderAdminPage, renderLoginPage } from "./admin-ui.js";
 import { config, publicConfig } from "./config.js";
 import {
   completeGitHubOAuthCallback,
@@ -9,7 +10,7 @@ import {
   linkWorkspaceRepository,
   listGitHubInstallState,
 } from "./github-installations.js";
-import { listLinearInstallations } from "./linear.js";
+import { listLinearInstallations, listLinearTeams, type LinearInstallationSummary } from "./linear.js";
 import { completeOAuthInstall, consumeOAuthState, createInstallUrl } from "./oauth.js";
 import { handleAgentSessionWebhook } from "./session-runner.js";
 import { isFreshWebhookTimestamp, verifyLinearSignature } from "./signature.js";
@@ -25,12 +26,28 @@ type LinearWebhookPayload = {
       id?: string;
       urlKey?: string;
     };
+    team?: {
+      id?: string;
+      key?: string;
+      name?: string;
+    };
     issue?: {
       identifier?: string;
       title?: string;
       url?: string;
+      team?: {
+        id?: string;
+        key?: string;
+        name?: string;
+      };
     };
   };
+};
+
+type AdminLinearInstallation = LinearInstallationSummary & {
+  workspaceKey: string;
+  teams?: Array<{ id: string; key: string; name: string }>;
+  teamsError?: string;
 };
 
 function rawBody(req: Request): Buffer {
@@ -48,6 +65,7 @@ function logWebhook(payload: LinearWebhookPayload) {
     type: payload.type,
     action: payload.action,
     organizationId: payload.organizationId ?? payload.agentSession?.organization?.id,
+    teamId: payload.agentSession?.team?.id ?? payload.agentSession?.issue?.team?.id,
     agentSessionId: payload.agentSession?.id,
     issue: payload.agentSession?.issue?.identifier,
     activityType: agentActivity?.content?.type,
@@ -61,20 +79,66 @@ function handleAgentSessionEvent(payload: LinearWebhookPayload) {
   });
 }
 
+const ADMIN_COOKIE_NAME = "pippo_admin";
+const ADMIN_COOKIE_MAX_AGE_SECONDS = 24 * 60 * 60;
+
 function installSecretFromRequest(req: Request): string | undefined {
   const header = req.get("authorization");
   if (header?.startsWith("Bearer ")) return header.slice("Bearer ".length);
   return typeof req.query.install_secret === "string" ? req.query.install_secret : undefined;
 }
 
-function isInstallAuthorized(req: Request): boolean {
-  if (!config.INSTALL_SECRET) return true;
-  const provided = installSecretFromRequest(req);
-  if (!provided) return false;
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
 
-  const expected = Buffer.from(config.INSTALL_SECRET);
-  const actual = Buffer.from(provided);
-  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+function isInstallSecretAuthorized(provided: string | undefined): boolean {
+  if (!config.INSTALL_SECRET) return true;
+  if (!provided) return false;
+  return timingSafeStringEqual(provided, config.INSTALL_SECRET);
+}
+
+function parseCookies(req: Request): Record<string, string> {
+  const header = req.get("cookie");
+  if (!header) return {};
+  return Object.fromEntries(header.split(";").flatMap((entry) => {
+    const [rawName, ...rawValue] = entry.trim().split("=");
+    if (!rawName) return [];
+    return [[rawName, decodeURIComponent(rawValue.join("="))]];
+  }));
+}
+
+function adminCookieSignature(expiresAt: number): string {
+  return crypto
+    .createHmac("sha256", config.INSTALL_SECRET ?? "pippo-dev")
+    .update(String(expiresAt))
+    .digest("base64url");
+}
+
+function createAdminCookie(): string {
+  const expiresAt = Date.now() + ADMIN_COOKIE_MAX_AGE_SECONDS * 1000;
+  return `${expiresAt}.${adminCookieSignature(expiresAt)}`;
+}
+
+function isAdminCookieAuthorized(req: Request): boolean {
+  if (!config.INSTALL_SECRET) return true;
+  const cookie = parseCookies(req)[ADMIN_COOKIE_NAME];
+  if (!cookie) return false;
+  const [expiresText, signature] = cookie.split(".");
+  const expiresAt = Number(expiresText);
+  if (!Number.isFinite(expiresAt) || expiresAt < Date.now() || !signature) return false;
+  return timingSafeStringEqual(signature, adminCookieSignature(expiresAt));
+}
+
+function adminCookieHeader(value: string, maxAgeSeconds = ADMIN_COOKIE_MAX_AGE_SECONDS): string {
+  const secure = config.BASE_URL.startsWith("https://") ? "; Secure" : "";
+  return `${ADMIN_COOKIE_NAME}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure}`;
+}
+
+function isInstallAuthorized(req: Request): boolean {
+  return isAdminCookieAuthorized(req) || isInstallSecretAuthorized(installSecretFromRequest(req));
 }
 
 function requireInstallAuthorized(req: Request, res: Response): boolean {
@@ -113,13 +177,89 @@ async function inferRepository(candidate?: string): Promise<string> {
   throw new Error("Specify repo=owner/repo; it could not be inferred.");
 }
 
+function workspaceKey(installation: LinearInstallationSummary): string {
+  return installation.organizationId ?? installation.organizationUrlKey ?? installation.key;
+}
+
+async function linearInstallationsForAdmin(): Promise<AdminLinearInstallation[]> {
+  const installations = await listLinearInstallations();
+  return Promise.all(installations.map(async (installation) => {
+    const key = workspaceKey(installation);
+    try {
+      return { ...installation, workspaceKey: key, teams: await listLinearTeams(installation.key) };
+    } catch (error) {
+      return {
+        ...installation,
+        workspaceKey: key,
+        teams: [],
+        teamsError: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }));
+}
+
+function parseScope(value: string | undefined): { workspaceKey?: string; teamKey?: string } {
+  if (!value) return {};
+  const [workspace, team] = value.split("|", 2);
+  return { workspaceKey: optionalString(workspace), teamKey: optionalString(team) };
+}
+
+async function renderAdmin(req: Request, res: Response, overrides: { notice?: string; error?: string } = {}) {
+  if (!isInstallAuthorized(req)) return res.redirect(302, "/admin/login");
+  const [linearInstallations, github] = await Promise.all([linearInstallationsForAdmin(), listGitHubInstallState()]);
+  return res.type("html").send(renderAdminPage({ linearInstallations, github, ...overrides }));
+}
+
 export function createApp() {
   const app = express();
 
   app.disable("x-powered-by");
+  app.use(express.urlencoded({ extended: false }));
 
   app.get("/healthz", (_req: Request, res: Response) => {
     res.json({ ok: true, service: "linear-pi-agent" });
+  });
+
+  app.get(["/", "/admin"], async (req: Request, res: Response, next: express.NextFunction) => {
+    try {
+      await renderAdmin(req, res, { notice: optionalString(req.query.notice), error: optionalString(req.query.error) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/admin/login", (req: Request, res: Response) => {
+    if (isInstallAuthorized(req)) return res.redirect(302, "/admin");
+    return res.type("html").send(renderLoginPage(optionalString(req.query.error)));
+  });
+
+  app.post("/admin/login", (req: Request, res: Response) => {
+    if (!isInstallSecretAuthorized(optionalString(req.body?.install_secret))) {
+      return res.status(401).type("html").send(renderLoginPage("Invalid install secret."));
+    }
+
+    res.setHeader("Set-Cookie", adminCookieHeader(createAdminCookie()));
+    return res.redirect(302, "/admin");
+  });
+
+  app.get("/admin/logout", (_req: Request, res: Response) => {
+    res.setHeader("Set-Cookie", adminCookieHeader("", 0));
+    return res.redirect(302, "/admin/login");
+  });
+
+  app.post("/admin/link", async (req: Request, res: Response, next: express.NextFunction) => {
+    try {
+      if (!isInstallAuthorized(req)) return res.redirect(302, "/admin/login");
+      const scope = parseScope(optionalString(req.body?.scope));
+      const workspaceKey = await inferWorkspaceKey(scope.workspaceKey);
+      const repository = await inferRepository(optionalString(req.body?.repo));
+      const link = await linkWorkspaceRepository(workspaceKey, repository, scope.teamKey);
+      await renderAdmin(req, res, {
+        notice: `Linked ${link.teamKey ? `team ${link.teamKey}` : `workspace ${link.workspaceKey}`} to ${link.defaultRepository}.`,
+      });
+    } catch (error) {
+      await renderAdmin(req, res, { error: error instanceof Error ? error.message : String(error) }).catch(() => next(error));
+    }
   });
 
   app.get("/linear/install", async (req: Request, res: Response, next: express.NextFunction) => {
@@ -269,8 +409,9 @@ export function createApp() {
     try {
       if (!requireInstallAuthorized(req, res)) return;
       const workspaceKey = await inferWorkspaceKey(optionalString(req.query.workspace) ?? optionalString(req.body?.workspace));
+      const teamKey = optionalString(req.query.team) ?? optionalString(req.body?.team);
       const repository = await inferRepository(optionalString(req.query.repo) ?? optionalString(req.body?.repo));
-      const link = await linkWorkspaceRepository(workspaceKey, repository);
+      const link = await linkWorkspaceRepository(workspaceKey, repository, teamKey);
       res.json({ ok: true, link });
     } catch (error) {
       next(error);

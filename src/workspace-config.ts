@@ -10,6 +10,7 @@ import {
 
 export type RepositoryTarget = {
   workspaceKey?: string;
+  teamKey?: string;
   repositoryKey?: string;
   repository?: string;
   repositoryUrl?: string;
@@ -35,6 +36,15 @@ export function workspaceKeyFromWebhook(payload: AgentSessionWebhook): string | 
     payload.organization?.urlKey ??
     payload.agentSession?.organization?.id ??
     payload.agentSession?.organization?.urlKey;
+}
+
+export function teamKeyFromWebhook(payload: AgentSessionWebhook): string | undefined {
+  return payload.team?.id ??
+    payload.team?.key ??
+    payload.agentSession?.team?.id ??
+    payload.agentSession?.team?.key ??
+    payload.agentSession?.issue?.team?.id ??
+    payload.agentSession?.issue?.team?.key;
 }
 
 function payloadText(payload: AgentSessionWebhook): string {
@@ -66,8 +76,9 @@ async function assertWorkdirExists(workdir: string): Promise<void> {
 
 export async function resolveRepositoryTarget(payload: AgentSessionWebhook): Promise<RepositoryTarget> {
   const workspaceKey = workspaceKeyFromWebhook(payload);
+  const teamKey = teamKeyFromWebhook(payload);
   const repositoryHint = repositoryHintFromPayload(payload);
-  const installedRepository = await selectInstalledRepository({ workspaceKey, repositoryHint });
+  const installedRepository = await selectInstalledRepository({ workspaceKey, teamKey, repositoryHint });
 
   if (!installedRepository) {
     const fallback = fallbackTarget();
@@ -78,6 +89,7 @@ export async function resolveRepositoryTarget(payload: AgentSessionWebhook): Pro
   const workdir = await ensureLocalRepository(installedRepository);
   return {
     workspaceKey,
+    teamKey,
     repositoryKey: normalizeRepository(installedRepository.fullName),
     repository: installedRepository.fullName,
     repositoryUrl: installedRepository.htmlUrl,
@@ -94,6 +106,7 @@ export function repositoryTargetSummary(target: RepositoryTarget): string {
     target.repository ? `Repository: ${target.repository}` : undefined,
     target.repositoryUrl ? `Repository URL: ${target.repositoryUrl}` : undefined,
     target.workspaceKey ? `Workspace key: ${target.workspaceKey}` : undefined,
+    target.teamKey ? `Team key: ${target.teamKey}` : undefined,
     `Workdir: ${target.workdir}`,
     `Source: ${target.source}`,
   ].filter(Boolean).join("\n");
