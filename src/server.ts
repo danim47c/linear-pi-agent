@@ -204,6 +204,14 @@ function parseScope(value: string | undefined): { workspaceKey?: string; teamKey
   return { workspaceKey: optionalString(workspace), teamKey: optionalString(team) };
 }
 
+function adminRedirect(params: { notice?: string; error?: string } = {}): string {
+  const query = new URLSearchParams();
+  if (params.notice) query.set("notice", params.notice);
+  if (params.error) query.set("error", params.error);
+  const suffix = query.toString();
+  return suffix ? `/admin?${suffix}` : "/admin";
+}
+
 async function renderAdmin(req: Request, res: Response, overrides: { notice?: string; error?: string } = {}) {
   if (!isInstallAuthorized(req)) return res.redirect(302, "/admin/login");
   const [linearInstallations, github] = await Promise.all([linearInstallationsForAdmin(), listGitHubInstallState()]);
@@ -278,18 +286,18 @@ export function createApp() {
   app.get("/linear/oauth/callback", async (req: Request, res: Response, next: express.NextFunction) => {
     try {
       if (typeof req.query.error === "string") {
-        return res.status(400).send(`Linear OAuth error: ${req.query.error}\n`);
+        return res.redirect(302, adminRedirect({ error: `Linear OAuth error: ${req.query.error}` }));
       }
 
       const code = typeof req.query.code === "string" ? req.query.code : undefined;
       const state = typeof req.query.state === "string" ? req.query.state : undefined;
 
       if (!code || !state) {
-        return res.status(400).send("Missing OAuth code or state.\n");
+        return res.redirect(302, adminRedirect({ error: "Missing Linear OAuth code or state." }));
       }
 
       if (!(await consumeOAuthState(state))) {
-        return res.status(401).send("Invalid or expired OAuth state.\n");
+        return res.redirect(302, adminRedirect({ error: "Invalid or expired Linear OAuth state." }));
       }
 
       const install = await completeOAuthInstall(code);
@@ -298,17 +306,11 @@ export function createApp() {
         scope: install.scope,
       });
 
-      return res.type("text/plain").send(
-        [
-          "Pi is installed in Linear.",
-          `Workspace: ${install.organizationName ?? install.organizationId ?? "unknown"}`,
-          `App user ID: ${install.viewerAppUserId}`,
-          "You can close this tab.",
-          "",
-        ].join("\n"),
-      );
+      return res.redirect(302, adminRedirect({
+        notice: `Linear workspace installed: ${install.organizationName ?? install.organizationId ?? install.viewerAppUserId}`,
+      }));
     } catch (error) {
-      next(error);
+      return res.redirect(302, adminRedirect({ error: error instanceof Error ? error.message : String(error) }));
     }
   });
 
@@ -350,20 +352,11 @@ export function createApp() {
         linkedWorkspace: installation.linked?.workspaceKey,
       });
 
-      return res.type("text/plain").send(
-        [
-          "Pippo GitHub App installation saved.",
-          `Account: ${installation.installation.accountLogin ?? "unknown"}`,
-          `Installation ID: ${installation.installation.id}`,
-          `Repositories: ${installation.installation.repositories.length}`,
-          installation.linked ? `Linked workspace: ${installation.linked.workspaceKey} -> ${installation.linked.defaultRepository}` : undefined,
-          "",
-          "You can close this tab.",
-          "",
-        ].filter(Boolean).join("\n"),
-      );
+      return res.redirect(302, adminRedirect({
+        notice: `GitHub App installed for ${installation.installation.accountLogin ?? "account"} (${installation.installation.repositories.length} repositories).`,
+      }));
     } catch (error) {
-      next(error);
+      return res.redirect(302, adminRedirect({ error: error instanceof Error ? error.message : String(error) }));
     }
   });
 
@@ -383,25 +376,17 @@ export function createApp() {
   app.get("/github/oauth/callback", async (req: Request, res: Response, next: express.NextFunction) => {
     try {
       if (typeof req.query.error === "string") {
-        return res.status(400).send(`GitHub OAuth error: ${req.query.error}\n`);
+        return res.redirect(302, adminRedirect({ error: `GitHub OAuth error: ${req.query.error}` }));
       }
 
       const code = optionalString(req.query.code);
-      if (!code) return res.status(400).send("Missing GitHub OAuth code.\n");
+      if (!code) return res.redirect(302, adminRedirect({ error: "Missing GitHub OAuth code." }));
 
       const user = await completeGitHubOAuthCallback({ code, state: optionalString(req.query.state) });
       console.log("github oauth user authorized", { login: user.login, id: user.id });
-      return res.type("text/plain").send(
-        [
-          "GitHub user authorization saved.",
-          `GitHub user: ${user.login}`,
-          "Pippo does not persist the OAuth access token; repository access uses GitHub App installation tokens.",
-          "You can close this tab.",
-          "",
-        ].join("\n"),
-      );
+      return res.redirect(302, adminRedirect({ notice: `GitHub OAuth authorized for ${user.login}.` }));
     } catch (error) {
-      next(error);
+      return res.redirect(302, adminRedirect({ error: error instanceof Error ? error.message : String(error) }));
     }
   });
 

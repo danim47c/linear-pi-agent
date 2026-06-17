@@ -208,6 +208,10 @@ export async function completeGitHubSetupCallback(params: {
   setupAction?: string;
 }): Promise<{ installation: GitHubInstallationRecord; state?: GitHubState; linked?: WorkspaceRepositoryLink }> {
   const state = await consumeState(params.state, "install");
+  if (!state) {
+    throw new Error("Invalid or expired GitHub setup state. Start the GitHub installation from Pippo Admin.");
+  }
+
   const installation = await refreshGitHubInstallation(params.installationId);
   let linked: WorkspaceRepositoryLink | undefined;
 
