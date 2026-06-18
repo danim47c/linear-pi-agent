@@ -8,6 +8,7 @@ import {
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
 import { config } from "./config.js";
+import { prepareGitHubCommandAuth, type GitHubCommandAuth } from "./github-installations.js";
 import { createAgentActivity, type LinearRequestOptions } from "./linear.js";
 import type { AgentSessionWebhook } from "./session-runner.js";
 import { repositoryTargetSummary, resolveRepositoryTarget, type RepositoryTarget } from "./workspace-config.js";
@@ -97,6 +98,17 @@ function guidanceText(payload: AgentSessionWebhook): string {
   return `\n\nLinear guidance:\n${rules.map((rule) => `- ${rule}`).join("\n")}`;
 }
 
+function githubCredentialText(target?: RepositoryTarget): string | undefined {
+  if (!target?.githubInstallationId || !target.repository) return undefined;
+  return [
+    "GitHub credentials:",
+    "- GitHub App credentials are available to git and gh for this repository during the run.",
+    "- Use git normally over the origin HTTPS remote; GIT_ASKPASS supplies the installation token.",
+    "- gh is installed and GH_TOKEN/GITHUB_TOKEN are set for this repository.",
+    "- Prefer creating a branch and PR instead of committing directly to the default branch.",
+  ].join("\n");
+}
+
 export function buildPiPrompt(payload: AgentSessionWebhook, target?: RepositoryTarget): string {
   const issue = payload.agentSession?.issue;
   const promptContext = payload.promptContext ?? payload.agentSession?.promptContext;
@@ -106,6 +118,7 @@ export function buildPiPrompt(payload: AgentSessionWebhook, target?: RepositoryT
     "Work directly in the selected repository with full control. Make code changes when appropriate.",
     "Do not expose secrets. Be concise in your final summary for Linear.",
     target ? `\nSelected repository context:\n${repositoryTargetSummary(target)}` : undefined,
+    githubCredentialText(target) ? `\n${githubCredentialText(target)}` : undefined,
     "",
     issue ? "Linear issue:" : "Linear session:",
     issue?.identifier ? `- Identifier: ${issue.identifier}` : undefined,
@@ -244,6 +257,43 @@ function disposeSdkSession(agentSessionId: string): void {
   sdkSessions.delete(agentSessionId);
 }
 
+function applyProcessEnv(env: NodeJS.ProcessEnv): () => void {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(env)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+
+  return () => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
+async function prepareCommandAuth(target: RepositoryTarget): Promise<GitHubCommandAuth | undefined> {
+  if (!target.repository || !target.githubInstallationId) return undefined;
+  try {
+    const auth = await prepareGitHubCommandAuth(target.repository);
+    if (auth) {
+      console.log("github command credentials prepared", {
+        repository: target.repository,
+        installationId: target.githubInstallationId,
+        expiresAt: auth.expiresAt,
+      });
+    }
+    return auth;
+  } catch (error) {
+    console.error("failed to prepare github command credentials", {
+      repository: target.repository,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
 function handleSdkEvent(event: AgentSessionEvent, reporter: ProgressReporter): void {
   switch (event.type) {
     case "agent_start":
@@ -302,6 +352,8 @@ export async function runPi(payload: AgentSessionWebhook, options?: LinearReques
 
   let timedOut = false;
   let timeout: NodeJS.Timeout | undefined;
+  const commandAuth = await prepareCommandAuth(target);
+  const restoreCommandEnv = commandAuth ? applyProcessEnv(commandAuth.env) : undefined;
 
   try {
     await Promise.race([
@@ -354,6 +406,12 @@ export async function runPi(payload: AgentSessionWebhook, options?: LinearReques
   } finally {
     if (timeout) clearTimeout(timeout);
     captureFinal();
+    restoreCommandEnv?.();
+    await commandAuth?.cleanup().catch((cleanupError: unknown) => {
+      console.error("failed to cleanup github command credentials", {
+        message: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      });
+    });
   }
 }
 

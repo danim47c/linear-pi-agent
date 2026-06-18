@@ -417,6 +417,41 @@ async function runGit(args: string[], options: { cwd?: string; env?: NodeJS.Proc
   });
 }
 
+export type GitHubCommandAuth = {
+  env: NodeJS.ProcessEnv;
+  expiresAt: string;
+  cleanup: () => Promise<void>;
+};
+
+export async function prepareGitHubCommandAuth(repositoryName: string): Promise<GitHubCommandAuth | undefined> {
+  const repository = await findInstalledRepository(repositoryName);
+  if (!repository) return undefined;
+
+  const token = await createInstallationAccessToken(repository.installationId, [repository.fullName]);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pippo-gh-auth-"));
+  const askPassPath = path.join(dir, "askpass.sh");
+  await fs.writeFile(
+    askPassPath,
+    `#!/bin/sh\ncase "$1" in\n  *Username*) printf '%s\\n' x-access-token ;;\n  *Password*) printf '%s\\n' "$GITHUB_TOKEN" ;;\n  *) printf '\\n' ;;\nesac\n`,
+    { mode: 0o700 },
+  );
+
+  return {
+    expiresAt: token.expires_at,
+    env: {
+      GIT_ASKPASS: askPassPath,
+      GIT_TERMINAL_PROMPT: "0",
+      GH_TOKEN: token.token,
+      GITHUB_TOKEN: token.token,
+      GIT_AUTHOR_NAME: config.GITHUB_APP_SLUG ? `${config.GITHUB_APP_SLUG}[bot]` : "pippo[bot]",
+      GIT_AUTHOR_EMAIL: config.GITHUB_APP_SLUG ? `${config.GITHUB_APP_SLUG}[bot]@users.noreply.github.com` : "pippo[bot]@users.noreply.github.com",
+      GIT_COMMITTER_NAME: config.GITHUB_APP_SLUG ? `${config.GITHUB_APP_SLUG}[bot]` : "pippo[bot]",
+      GIT_COMMITTER_EMAIL: config.GITHUB_APP_SLUG ? `${config.GITHUB_APP_SLUG}[bot]@users.noreply.github.com` : "pippo[bot]@users.noreply.github.com",
+    },
+    cleanup: () => fs.rm(dir, { recursive: true, force: true }),
+  };
+}
+
 export async function ensureLocalRepository(repository: InstalledGitHubRepository): Promise<string> {
   const workdir = repositoryWorkdir(repository);
   const token = await createInstallationAccessToken(repository.installationId, [repository.fullName]);
