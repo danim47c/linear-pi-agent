@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createAgentSession,
@@ -115,7 +115,32 @@ function githubCredentialText(target?: RepositoryTarget): string | undefined {
     "- Use git normally over the origin HTTPS remote; GIT_ASKPASS supplies the installation token.",
     "- gh is installed and GH_TOKEN/GITHUB_TOKEN are set for this repository.",
     "- Prefer creating a branch and PR instead of committing directly to the default branch.",
+    "- Do not add Co-authored-by trailers to commits.",
   ].join("\n");
+}
+
+async function installCommitMessageSanitizer(workdir: string): Promise<void> {
+  const gitDir = path.join(workdir, ".git");
+  try {
+    const gitDirStat = await stat(gitDir);
+    if (!gitDirStat.isDirectory()) return;
+  } catch {
+    return;
+  }
+
+  const hooksDir = path.join(gitDir, "hooks");
+  await mkdir(hooksDir, { recursive: true });
+
+  const hookScript = `#!/bin/sh
+# Managed by Pippo. Remove Pi's default co-author trailer from model-created commits.
+sed -i '/^[[:space:]]*[Cc]o-[Aa]uthored-[Bb]y:[[:space:]]*Pi[[:space:]]*<pi@users\\.noreply\\.github\\.com>[[:space:]]*$/d' "$1"
+`;
+
+  for (const hookName of ["prepare-commit-msg", "commit-msg"]) {
+    const hookPath = path.join(hooksDir, hookName);
+    await writeFile(hookPath, hookScript, { mode: 0o755 });
+    await chmod(hookPath, 0o755);
+  }
 }
 
 export function buildPiPrompt(payload: AgentSessionWebhook, target?: RepositoryTarget): string {
@@ -413,6 +438,8 @@ export async function runPi(payload: AgentSessionWebhook, options?: LinearReques
     workdir: target.workdir,
     source: target.source,
   });
+
+  await installCommitMessageSanitizer(target.workdir);
 
   const prompt = payload.action === "prompted" ? buildPiFollowUpPrompt(payload) : buildPiPrompt(payload, target);
   const reporter = new ProgressReporter(agentSessionId, options);
