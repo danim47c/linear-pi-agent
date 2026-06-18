@@ -15,6 +15,7 @@ import { repositoryTargetSummary, resolveRepositoryTarget, type RepositoryTarget
 
 const MAX_LINEAR_BODY_CHARS = 8_000;
 const MAX_PROGRESS_CHARS = 220;
+const MAX_THINKING_PROGRESS_CHARS = 1_800;
 
 // Some installed pi extensions render background widgets even when pi is used
 // through the SDK. Initialize the global theme so those non-interactive hooks
@@ -77,6 +78,14 @@ function redact(text: string): string {
 
 function truncate(text: string, maxChars = MAX_PROGRESS_CHARS): string {
   const clean = redact(text).replace(/\s+/g, " ").trim();
+  return clean.length <= maxChars ? clean : `${clean.slice(0, maxChars - 1)}…`;
+}
+
+function truncatePreservingLines(text: string, maxChars: number): string {
+  const clean = redact(text)
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   return clean.length <= maxChars ? clean : `${clean.slice(0, maxChars - 1)}…`;
 }
 
@@ -170,10 +179,22 @@ export function summarizePiResult(result: PiRunResult): string {
   return `${safe.slice(0, MAX_LINEAR_BODY_CHARS)}\n\n…output truncated…`;
 }
 
+type PendingProgressUpdate = {
+  type: "thought" | "action";
+  body: string;
+  action?: string;
+  parameter?: string;
+  dedupeKey?: string;
+  afterSend?: () => void;
+};
+
 class ProgressReporter {
-  private pending?: { type: "thought" | "action"; body: string; action?: string; parameter?: string };
+  private pending?: PendingProgressUpdate;
   private timer?: NodeJS.Timeout;
   private lastSentAt = 0;
+  private lastSentKey?: string;
+  private thinkingBuffer = "";
+  private thinkingSentOffset = 0;
 
   constructor(
     private readonly agentSessionId: string,
@@ -184,17 +205,57 @@ class ProgressReporter {
     this.queue({ type: "thought", body: truncate(body) });
   }
 
+  beginThinking(): void {
+    this.thinkingBuffer = "";
+    this.thinkingSentOffset = 0;
+  }
+
+  thinkingDelta(delta: string): void {
+    if (!delta) return;
+    this.thinkingBuffer += delta;
+    this.queueThinking();
+  }
+
+  endThinking(content?: string): void {
+    if (content && !this.thinkingBuffer.trim()) {
+      this.thinkingBuffer = content;
+    }
+    this.queueThinking();
+    void this.flush();
+  }
+
   action(action: string, parameter: string): void {
     // Keep tool/progress updates visible without leaving action-type entries
     // that may be interpreted by Linear as still-active work state.
     this.queue({
       type: "thought",
-      body: `${action}: ${parameter}`.trim(),
+      body: truncate(`${action}: ${parameter}`),
     });
   }
 
-  private queue(update: { type: "thought" | "action"; body: string; action?: string; parameter?: string }): void {
-    this.pending = update;
+  private queueThinking(): void {
+    const unsent = this.thinkingBuffer.slice(this.thinkingSentOffset);
+    const chunk = truncatePreservingLines(unsent, MAX_THINKING_PROGRESS_CHARS);
+    if (!chunk) return;
+
+    const sentThrough = this.thinkingBuffer.length;
+    const body = `Pi thinking:\n${chunk}`;
+    this.queue({
+      type: "thought",
+      body,
+      dedupeKey: `thinking:${body}`,
+      afterSend: () => {
+        this.thinkingSentOffset = Math.max(this.thinkingSentOffset, sentThrough);
+      },
+    });
+  }
+
+  private queue(update: PendingProgressUpdate): void {
+    if (!update.body.trim()) return;
+    const dedupeKey = update.dedupeKey ?? `${update.type}:${update.action ?? ""}:${update.parameter ?? ""}:${update.body}`;
+    if (this.pending?.dedupeKey === dedupeKey || this.lastSentKey === dedupeKey) return;
+
+    this.pending = { ...update, dedupeKey };
     const wait = Math.max(0, config.PI_PROGRESS_DEBOUNCE_MS - (Date.now() - this.lastSentAt));
     if (this.timer) return;
     this.timer = setTimeout(() => void this.flush(), wait);
@@ -218,6 +279,8 @@ class ProgressReporter {
       } else {
         await createAgentActivity(this.agentSessionId, { type: "thought", body: update.body }, this.options);
       }
+      this.lastSentKey = update.dedupeKey;
+      update.afterSend?.();
     } catch (error) {
       console.error("failed to post pi progress", { message: error instanceof Error ? error.message : String(error) });
     }
@@ -300,7 +363,10 @@ function handleSdkEvent(event: AgentSessionEvent, reporter: ProgressReporter): v
       reporter.thought("Pi is starting the coding session.");
       break;
     case "turn_start":
-      reporter.thought("Pi is thinking.");
+      // Do not post a generic "Pi is thinking." for every model turn. Linear
+      // renders every activity, so repeated turns otherwise show the same
+      // status several times in a row. Real thinking content is streamed from
+      // message_update/thinking_delta below.
       break;
     case "tool_execution_start":
       reporter.action(`Running ${event.toolName}`, summarizeToolArgs(event.toolName, event.args));
@@ -308,6 +374,13 @@ function handleSdkEvent(event: AgentSessionEvent, reporter: ProgressReporter): v
     case "tool_execution_end":
       if (event.isError) reporter.thought(`${event.toolName} reported an error; Pi is adjusting.`);
       break;
+    case "message_update": {
+      const messageEvent = event.assistantMessageEvent;
+      if (messageEvent.type === "thinking_start") reporter.beginThinking();
+      if (messageEvent.type === "thinking_delta") reporter.thinkingDelta(messageEvent.delta);
+      if (messageEvent.type === "thinking_end") reporter.endThinking(messageEvent.content);
+      break;
+    }
     case "message_end":
       // Do not mirror assistant messages as progress thoughts. Linear uses the
       // latest activity to infer session state; duplicating the final answer as
