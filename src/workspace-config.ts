@@ -60,12 +60,18 @@ function payloadText(payload: AgentSessionWebhook): string {
 
 export function repositoryHintFromPayload(payload: AgentSessionWebhook): string | undefined {
   const text = payloadText(payload);
-  const explicit = text.match(/(?:^|[\s,;])(?:repo|repository|github)\s*[:=]\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/i);
+
+  const explicit = text.match(
+    /(?:^|[\s,;])(?:repo|repository|github)\s*[:=]\s*(?:https:\/\/github\.com\/)?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\.git)?\b/i,
+  );
   if (explicit?.[1]) return normalizeRepository(explicit[1]);
 
-  const mention = text.match(/(?:^|\s)@([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/);
-  if (mention?.[1]) return normalizeRepository(mention[1]);
+  const githubUrl = text.match(/https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\.git)?\b/i);
+  if (githubUrl?.[1]) return normalizeRepository(githubUrl[1]);
 
+  // Do not treat @owner/package as a repository hint. Linear messages often
+  // include npm packages like @howaboua/pi-codex-conversion, which are not the
+  // target application repository.
   return undefined;
 }
 
