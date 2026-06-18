@@ -47,19 +47,16 @@ export function teamKeyFromWebhook(payload: AgentSessionWebhook): string | undef
     payload.agentSession?.issue?.team?.key;
 }
 
-function payloadText(payload: AgentSessionWebhook): string {
-  return [
-    payload.agentActivity?.content?.body,
-    payload.promptContext,
-    payload.agentSession?.promptContext,
-    payload.agentSession?.issue?.identifier,
-    payload.agentSession?.issue?.title,
-    payload.agentSession?.issue?.description,
-  ].filter(Boolean).join("\n");
+function repositoryHintText(payload: AgentSessionWebhook): string {
+  // Only accept explicit repository overrides from the user's agent prompt/follow-up.
+  // Linear issue titles/descriptions/promptContext can contain GitHub/npm mentions
+  // that are not routing instructions, so those fields must not steer repository
+  // selection. Admin workspace/team links remain the source of truth.
+  return payload.agentActivity?.content?.body ?? "";
 }
 
 export function repositoryHintFromPayload(payload: AgentSessionWebhook): string | undefined {
-  const text = payloadText(payload);
+  const text = repositoryHintText(payload);
 
   const explicit = text.match(
     /(?:^|[\s,;])(?:repo|repository|github)\s*[:=]\s*(?:https:\/\/github\.com\/)?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\.git)?\b/i,
