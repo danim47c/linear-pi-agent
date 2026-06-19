@@ -16,6 +16,8 @@ import { repositoryTargetSummary, resolveRepositoryTarget, type RepositoryTarget
 const MAX_LINEAR_BODY_CHARS = 8_000;
 const MAX_PROGRESS_CHARS = 220;
 const MAX_THINKING_PROGRESS_CHARS = 1_800;
+const MAX_THINKING_BUFFER_CHARS = 12_000;
+const LINEAR_HEARTBEAT_MS = 60_000;
 
 // Some installed pi extensions render background widgets even when pi is used
 // through the SDK. Initialize the global theme so those non-interactive hooks
@@ -216,10 +218,11 @@ type PendingProgressUpdate = {
 class ProgressReporter {
   private pending?: PendingProgressUpdate;
   private timer?: NodeJS.Timeout;
-  private lastSentAt = 0;
+  private heartbeatTimer?: NodeJS.Timeout;
+  private lastSentAt = Date.now();
+  private heartbeatStartedAt = Date.now();
   private lastSentKey?: string;
   private thinkingBuffer = "";
-  private thinkingSentOffset = 0;
 
   constructor(
     private readonly agentSessionId: string,
@@ -230,14 +233,38 @@ class ProgressReporter {
     this.queue({ type: "thought", body: truncate(body) });
   }
 
+  startHeartbeat(): void {
+    if (this.heartbeatTimer) return;
+    this.heartbeatStartedAt = Date.now();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.pending) return;
+      if (Date.now() - this.lastSentAt < LINEAR_HEARTBEAT_MS) return;
+      const elapsedMinutes = Math.max(1, Math.round((Date.now() - this.heartbeatStartedAt) / 60_000));
+      this.queue({
+        type: "thought",
+        body: `Pippo is still working (${elapsedMinutes} min).`,
+        dedupeKey: `heartbeat:${elapsedMinutes}`,
+      });
+    }, LINEAR_HEARTBEAT_MS);
+    this.heartbeatTimer.unref();
+  }
+
+  stopHeartbeat(): void {
+    if (!this.heartbeatTimer) return;
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
+  }
+
   beginThinking(): void {
     this.thinkingBuffer = "";
-    this.thinkingSentOffset = 0;
   }
 
   thinkingDelta(delta: string): void {
     if (!delta) return;
     this.thinkingBuffer += delta;
+    if (this.thinkingBuffer.length > MAX_THINKING_BUFFER_CHARS) {
+      this.thinkingBuffer = this.thinkingBuffer.slice(-MAX_THINKING_BUFFER_CHARS);
+    }
     this.queueThinking();
   }
 
@@ -259,18 +286,20 @@ class ProgressReporter {
   }
 
   private queueThinking(): void {
-    const unsent = this.thinkingBuffer.slice(this.thinkingSentOffset);
-    const chunk = truncatePreservingLines(unsent, MAX_THINKING_PROGRESS_CHARS);
+    if (!this.thinkingBuffer.trim()) return;
+
+    const consumedChars = Math.min(this.thinkingBuffer.length, MAX_THINKING_PROGRESS_CHARS);
+    const hasMore = this.thinkingBuffer.length > consumedChars;
+    const chunk = truncatePreservingLines(this.thinkingBuffer.slice(0, consumedChars), MAX_THINKING_PROGRESS_CHARS);
     if (!chunk) return;
 
-    const sentThrough = this.thinkingBuffer.length;
-    const body = `Pi thinking:\n${chunk}`;
+    const body = `Pi thinking:\n${chunk}${hasMore ? "…" : ""}`;
     this.queue({
       type: "thought",
       body,
       dedupeKey: `thinking:${body}`,
       afterSend: () => {
-        this.thinkingSentOffset = Math.max(this.thinkingSentOffset, sentThrough);
+        this.thinkingBuffer = this.thinkingBuffer.slice(consumedChars);
       },
     });
   }
@@ -443,6 +472,7 @@ export async function runPi(payload: AgentSessionWebhook, options?: LinearReques
 
   const prompt = payload.action === "prompted" ? buildPiFollowUpPrompt(payload) : buildPiPrompt(payload, target);
   const reporter = new ProgressReporter(agentSessionId, options);
+  reporter.startHeartbeat();
   const managed = await getSdkSession(agentSessionId, reporter, target.workdir);
   let finalText = "";
   const captureFinal = managed.session.subscribe((event) => {
@@ -504,6 +534,7 @@ export async function runPi(payload: AgentSessionWebhook, options?: LinearReques
     result.summary = summarizePiResult(result);
     return result;
   } finally {
+    reporter.stopHeartbeat();
     if (timeout) clearTimeout(timeout);
     captureFinal();
     restoreCommandEnv?.();

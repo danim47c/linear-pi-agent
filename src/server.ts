@@ -12,7 +12,7 @@ import {
 } from "./github-installations.js";
 import { listLinearInstallations, listLinearTeams, type LinearInstallationSummary } from "./linear.js";
 import { completeOAuthInstall, consumeOAuthState, createInstallUrl } from "./oauth.js";
-import { handleAgentSessionWebhook } from "./session-runner.js";
+import { handleAgentSessionWebhook, recoverInterruptedSessions } from "./session-runner.js";
 import { isFreshWebhookTimestamp, verifyLinearSignature } from "./signature.js";
 
 type LinearWebhookPayload = {
@@ -449,5 +449,8 @@ if (process.env.NODE_ENV !== "test") {
   const app = createApp();
   app.listen(config.PORT, config.HOST, () => {
     console.log("linear pi agent listening", publicConfig());
+    void recoverInterruptedSessions().catch((error: Error) => {
+      console.error("failed to recover interrupted sessions", { message: error.message });
+    });
   });
 }
